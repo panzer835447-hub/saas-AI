@@ -1,0 +1,274 @@
+"""預算決策中心 API 與前端靜態檔服務。
+
+本機執行：python -m uvicorn server:app --port 8600 --reload
+
+每個資料 API 都接受 ds（上傳資料集代號，空白＝合成示範資料）與 role / dept（檢視身分）。
+身分是展示用，正式導入時改由公司 SSO 帶入；部門主管的範圍在伺服器端強制套用。
+"""
+import io
+import threading
+from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
+
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+import ai
+import budget_core as core
+import report
+
+STATIC = Path(__file__).parent / "static"
+MAX_UPLOAD_BYTES = 3 * 1024 * 1024
+app = FastAPI(title="預算決策中心", docs_url=None, redoc_url=None)
+app.add_middleware(GZipMiddleware, minimum_size=2048)  # 費用明細帳約 300 KB，壓縮後約十分之一
+
+Role = Literal["cfo", "fpa", "head"]
+Lang = Literal["zh", "en"]
+
+
+def pick_depts(depts):
+    names = {core.dept_key(d): d for d in core.DEPTS}
+    return [names[n] for n in depts.split(",") if n in names]
+
+
+def scoped(depts, role, dept):
+    """部門主管只能看自己的部門，不管前端送什麼。"""
+    if role == "head":
+        own = pick_depts(dept)
+        if not own:
+            raise HTTPException(400, "部門主管身分需要指定所屬部門")
+        return own
+    return pick_depts(depts)
+
+
+def check_year(year, ds):
+    if year not in core.data_years(core.dataset(ds)):
+        raise HTTPException(404, "沒有這個年度的資料")
+
+
+@app.on_event("startup")
+def warm_cache():
+    # 回放要重算約 440 次預測（約 2 秒），開機時先在背景算好全部門的版本
+    threading.Thread(target=core.replay, args=((),), daemon=True).start()
+
+
+@app.get("/api/meta")
+def get_meta(ds: str = ""):
+    return core.meta(ds)
+
+
+@app.get("/api/overview")
+def get_overview(year: int, depts: str = Query("", description="以逗號分隔的部門名稱，空白代表全部"),
+                 ds: str = "", role: Role = "cfo", dept: str = "", lang: Lang = "zh", th: str = ""):
+    check_year(year, ds)
+    return core.overview(year, scoped(depts, role, dept), ds, lang, core.parse_th(th))
+
+
+@app.get("/api/report.pdf")
+def get_report(year: int, depts: str = "", ds: str = "", role: Role = "cfo", dept: str = "", lang: Lang = "zh", th: str = ""):
+    check_year(year, ds)
+    pdf, name = report.executive_report(year, scoped(depts, role, dept), ds, lang, role, core.parse_th(th))
+    # 中文檔名用 RFC 5987 編碼，另附 ASCII 檔名給舊瀏覽器
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=\"FY{year}_budget_summary.pdf\"; filename*=UTF-8''{quote(name)}"})
+
+
+@app.get("/api/replay")
+def get_replay(depts: str = "", ds: str = "", role: Role = "cfo", dept: str = "", th: str = ""):
+    return core.replay(tuple(scoped(depts, role, dept)), ds, core.parse_th(th))
+
+
+@app.get("/api/backtest")
+def get_backtest(year: int, depts: str = "", month: int = 8, ds: str = "", role: Role = "cfo", dept: str = ""):
+    check_year(year, ds)
+    return core.backtest(year, tuple(scoped(depts, role, dept)), month, ds)
+
+
+@app.get("/api/costs")
+def get_costs(year: int, depts: str = "", ds: str = "", role: Role = "cfo", dept: str = "", lang: Lang = "zh"):
+    check_year(year, ds)
+    return core.costs(year, tuple(scoped(depts, role, dept)), ds, lang, role)
+
+
+@app.get("/api/ledger.xlsx")
+def get_ledger_xlsx(year: int, depts: str = "", ds: str = "", role: Role = "cfo", dept: str = "", lang: Lang = "zh",
+                    fdept: str = "", gl: str = "", cfo: bool = False, q: str = Query("", max_length=100)):
+    """費用明細帳匯出：範圍與遮罩和畫面相同（部門主管只匯得出自己部門）；fdept / gl / cfo / q 為明細帳的篩選條件。"""
+    check_year(year, ds)
+    data, name = report.ledger_xlsx(year, scoped(depts, role, dept), ds, lang, role, fdept, gl, cfo, q)
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename=\"FY{year}_expense_ledger.xlsx\"; filename*=UTF-8''{quote(name)}"})
+
+
+@app.get("/api/quality")
+def get_quality(ds: str = "", lang: Lang = "zh"):
+    return core.quality(ds, lang)
+
+
+@app.get("/api/template.csv")
+def get_template(ds: str = ""):
+    name = "budget_monthly_template.csv" if not core.dataset_info(ds)["id"] else "budget_monthly_current.csv"
+    return Response(core.template_csv(ds), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/scale")
+def post_scale(scale: float, role: Role = "cfo", lang: Lang = "zh"):
+    """系統設定：依公司年度營業費用量級（億元）重新產生示範資料，回傳新的資料集代號。"""
+    if role == "head":
+        raise HTTPException(403, core.tx(lang, "部門主管身分沒有變更系統設定的權限", "Department heads cannot change settings"))
+    return core.dataset_info(core.scaled_demo(scale))
+
+
+@app.post("/api/upload")
+async def post_upload(request: Request, name: str = "上傳資料.csv", role: Role = "cfo", lang: Lang = "zh"):
+    T = lambda zh, en: core.tx(lang, zh, en)
+    if role == "head":
+        raise HTTPException(403, T("部門主管身分沒有匯入資料的權限", "Department heads cannot import data"))
+    body = await request.body()
+    if len(body) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, T("檔案超過 3 MB", "The file is larger than 3 MB"))
+    raw = None
+    for enc in ("utf-8-sig", "cp950"):  # Excel 另存的 CSV 常是 Big5（cp950）
+        try:
+            raw = pd.read_csv(io.BytesIO(body), encoding=enc, dtype=str, keep_default_na=False, na_values=[""])
+            break
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            raise HTTPException(422, detail={"errors": [T("無法讀取檔案，請確認是 CSV 格式（逗號分隔）。", "Cannot read the file; make sure it is a comma-separated CSV.")]})
+    if raw is None:
+        raise HTTPException(422, detail={"errors": [T("無法辨識檔案編碼，請用 UTF-8 或 Big5 另存 CSV。", "Unknown text encoding; save the CSV as UTF-8 or Big5.")]})
+    data, errors = core.validate_upload(raw, lang)
+    if errors:
+        raise HTTPException(422, detail={"errors": errors})
+    ds = core.register_dataset(data, Path(name).name[:80])
+    return core.dataset_info(ds)
+
+
+class Message(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=8000)
+
+
+class ChatRequest(BaseModel):
+    year: int
+    depts: str = ""
+    ds: str = ""
+    viewRole: Role = "cfo"
+    viewDept: str = ""
+    lang: Lang = "zh"
+    th: str = ""
+    messages: list[Message] = Field(min_length=1, max_length=40)
+
+
+class BriefRequest(BaseModel):
+    year: int
+    depts: str = ""
+    ds: str = ""
+    viewRole: Role = "cfo"
+    viewDept: str = ""
+    lang: Lang = "zh"
+    th: str = ""
+    fresh: bool = False
+
+
+class BriefPdfRequest(BriefRequest):
+    text: str = Field(min_length=1, max_length=12000)
+    source: str = Field("", max_length=80)
+    check: dict | None = None
+
+
+def head_note(role, picked, lang):
+    """部門主管只看得到自己的部門：告訴模型範圍，問到其他部門時說明是權限而不是沒有資料。"""
+    if role != "head":
+        return ""
+    own = core.dept_label(picked[0], lang)
+    return (f"The user is the head of {own} and is only authorised to see {own} data. If they ask about another department "
+            f"or the whole company, explain that it is outside their current access (not missing data), then answer about {own} instead.")
+
+
+def chat_depts(req):
+    present = set(core.dataset(req.ds).Department.unique())
+    picked = scoped(req.depts, req.viewRole, req.viewDept)
+    depts = tuple(d for d in core.DEPTS if d in picked and d in present) or tuple(d for d in core.DEPTS if d in present)
+    return depts, head_note(req.viewRole, picked, req.lang)
+
+
+@app.post("/api/brief")
+def post_brief(req: BriefRequest):
+    """AI 主管預警簡報：固定寫作格式，沿用對話的資料、數字查核與備援。"""
+    check_year(req.year, req.ds)
+    depts, note = chat_depts(req)
+    prompt = [{"role": "user", "content": ai.brief_prompt(req.lang, depts[0] if len(depts) == 1 else None, req.viewRole)}]
+    th = core.parse_th(req.th)
+    res = ai.chat(req.year, depts, prompt, req.ds, note, req.lang, th, req.fresh, brief=True)
+    if res["mode"] != "ai":  # 對話用的內建規則回答不了簡報格式，改用固定格式的規則簡報
+        res["text"] = report.rule_brief(req.year, depts, req.ds, req.lang, th)
+    return res
+
+
+@app.post("/api/brief.pdf")
+def post_brief_pdf(req: BriefPdfRequest):
+    check_year(req.year, req.ds)
+    depts, _ = chat_depts(req)
+    pdf, name = report.brief_report(req.year, depts, req.text, req.source or "AI", req.check, req.ds, req.lang, core.parse_th(req.th))
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=\"FY{req.year}_AI_alert_brief.pdf\"; filename*=UTF-8''{quote(name)}"})
+
+
+class TransferRequest(BaseModel):
+    year: int
+    lang: Lang = "zh"
+    ds: str = ""
+    no: str = Field(pattern=r"^TR-\d{4}-\d{4}-\d{4}$")
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    fromDept: str
+    toDept: str
+    amount: float = Field(gt=0, lt=1e12)
+    fromForecast: float
+    fromBudget: float
+    toForecast: float
+    toBudget: float
+    infl: float = 0
+    vol: float = 0
+    fx: float = 0
+    reason: str = Field("", max_length=1000)
+
+
+@app.post("/api/transfer.pdf")
+def post_transfer_pdf(req: TransferRequest):
+    keys = {core.dept_key(d) for d in core.DEPTS}
+    if req.fromDept not in keys or req.toDept not in keys:
+        raise HTTPException(422, core.tx(req.lang, "部門名稱不正確", "Unknown department"))
+    pdf, name = report.transfer_request(req, req.lang, core.dataset_info(req.ds)["source"] == "synthetic")
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=\"{req.no}.pdf\"; filename*=UTF-8''{quote(name)}"})
+
+
+@app.get("/api/ai-status")
+def get_ai_status():
+    return ai.status()
+
+
+@app.post("/api/chat")
+def post_chat(req: ChatRequest):
+    check_year(req.year, req.ds)
+    if req.messages[-1].role != "user" or not req.messages[-1].content.strip():
+        raise HTTPException(422, "最後一則訊息必須是問題")
+    depts, note = chat_depts(req)
+    return ai.chat(req.year, depts, [m.model_dump() for m in req.messages], req.ds, note, req.lang, core.parse_th(req.th))
+
+
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.get("/{path:path}")
+def spa(path: str):
+    # 前端用網址路徑切換頁面，所有非 API 路徑都回傳同一個頁面
+    return FileResponse(STATIC / "index.html")

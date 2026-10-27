@@ -1,0 +1,22 @@
+# Render 部署設定（B方案：budget_saas）。Streamlit 版仍由 Streamlit Community Cloud 部署，不受影響。
+# 在 Render 選 New → Blueprint，連到這個 GitHub repo 即會自動讀取本檔。
+services:
+  - type: web
+    name: budget-command-center
+    runtime: python
+    plan: free
+    rootDir: budget_saas
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/meta
+    envVars:
+      # Render 規定要寫完整版本（主.次.修訂），只寫 3.14 會建置失敗；3.14.6 為本機測試過的版本
+      - key: PYTHON_VERSION
+        value: "3.14.6"
+      # AI 金鑰：建立時 Render 會要求輸入（與 Streamlit Cloud secrets 相同的值），不會寫進 GitHub
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
