@@ -197,8 +197,9 @@ def head_note(role, picked, lang):
 
 
 # AI 用量保護：網站是公開網址，免費 AI 額度可能被少數人在短時間內用光，比賽當天就無法使用。
-# 每個來源 IP 每分鐘最多 6 次、每小時 40 次；全站每分鐘最多 30 次。超過時仍回覆（快取或內建規則），網站照常可用。
-AI_LIMITS = ((60, 6), (3600, 40))
+# 每個來源 IP 每分鐘最多 15 次、每小時 150 次；全站每分鐘最多 30 次。超過時仍回覆（快取或內建規則），網站照常可用。
+# 單一 IP 的上限不能太低：比賽現場評審多半連同一個 Wi-Fi，對外是同一個 IP
+AI_LIMITS = ((60, 15), (3600, 150))
 AI_GLOBAL_PER_MIN = 30
 _AI_HITS: dict[str, deque] = defaultdict(deque)
 _AI_ALL: deque = deque()
