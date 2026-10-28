@@ -42,21 +42,33 @@ def config_value(name, default=""):
 # ==========================================
 # 2. 模型服務
 # ==========================================
-def gemini_chat(api_key, messages, system, model):
+# 三家服務都用串流（SSE）呼叫：模型一邊寫、伺服器一邊轉給瀏覽器，第一個字約 1 秒內出現，不必等整段寫完
+def _sse_events(response):
+    """逐行讀取 Server-Sent Events，回傳每個 data: 的 JSON。"""
+    for raw in response:
+        line = raw.decode("utf-8", "replace").strip()
+        if line.startswith("data:"):
+            data = line[5:].strip()
+            if data and data != "[DONE]":
+                yield json.loads(data)
+
+
+def gemini_stream(api_key, messages, system, model):
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in messages],
         "generationConfig": {"maxOutputTokens": 1200, "temperature": 0.2},
     }
     request = urllib.request.Request(
-        f"{os.environ.get('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com')}/v1beta/models/{model}:generateContent",
+        f"{os.environ.get('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com')}/v1beta/models/{model}:streamGenerateContent?alt=sse",
         data=json.dumps(payload).encode("utf-8"),
         headers={"x-goog-api-key": api_key, "content-type": "application/json"}, method="POST",
     )
     with urllib.request.urlopen(request, timeout=45) as response:
-        body = json.loads(response.read().decode("utf-8"))
-    parts = body.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    return "".join(p.get("text", "") for p in parts if p.get("text")).strip()
+        for event in _sse_events(response):
+            for part in event.get("candidates", [{}])[0].get("content", {}).get("parts", []):
+                if part.get("text"):
+                    yield part["text"]
 
 
 def strip_think(text):
@@ -68,9 +80,9 @@ def strip_think(text):
     return text.strip()
 
 
-def openai_compat_chat(base_url, api_key, model, messages, system):
+def openai_compat_stream(base_url, api_key, model, messages, system):
     payload = {
-        "model": model, "temperature": 0.2, "max_tokens": 800,  # Groq 免費版每分鐘總量約 8,000 token，要留給輸入資料
+        "model": model, "temperature": 0.2, "max_tokens": 800, "stream": True,  # Groq 免費版每分鐘總量約 8,000 token，要留給輸入資料
         "messages": [{"role": "system", "content": system}] + [{"role": m["role"], "content": m["content"]} for m in messages],
     }
     request = urllib.request.Request(
@@ -80,10 +92,12 @@ def openai_compat_chat(base_url, api_key, model, messages, system):
                  "user-agent": "BudgetCommandCenter/1.0"},
     )
     with urllib.request.urlopen(request, timeout=60) as response:
-        body = json.loads(response.read().decode("utf-8"))
-    if body.get("error"):
-        raise RuntimeError(body["error"])
-    return strip_think(body.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
+        for event in _sse_events(response):
+            if event.get("error"):
+                raise RuntimeError(event["error"])
+            text = (event.get("choices") or [{}])[0].get("delta", {}).get("content")
+            if text:
+                yield text
 
 
 COMPAT_PROVIDERS = {
@@ -131,8 +145,10 @@ _CACHE = {}  # 相同問題、相同資料只消耗一次免費額度
 _COOLDOWNS = {}  # 剛遇到 429 的服務暫停 90 秒
 
 
-def llm_answer(messages, systems, fresh=False, cache_only=False):
-    """依序嘗試每個服務；回傳 (文字, 使用的服務名稱, 略過紀錄)。全部失敗時丟出 RuntimeError。
+def llm_stream(messages, systems, fresh=False, cache_only=False):
+    """依序嘗試每個服務，邊收邊回傳：
+    ("text", 目前累積的全文)…，若某家寫到一半失敗會先回 ("reset",) 再換下一家，
+    最後 ("final", 全文, 使用的服務名稱, 略過紀錄)。全部失敗時丟出 RuntimeError。
 
     systems = {"full": ..., "compact": ...}：Gemini 用完整資料，Groq / OpenRouter 免費額度每分鐘 token 較少，用精簡版。
     fresh=True（使用者按「重新產生」）時略過快取，重新請模型撰寫。
@@ -147,25 +163,56 @@ def llm_answer(messages, systems, fresh=False, cache_only=False):
         key = (prov["id"], prov["model"], system, payload)
         hit = _CACHE.get(key)
         if hit and not fresh and time.time() - hit[1] < 12 * 3600:
-            return hit[0], prov["name"], notes
+            yield "final", hit[0], prov["name"], notes
+            return
         if cache_only:
             continue
+        text = ""
         try:
             if prov["id"] == "gemini":
-                text = strip_think(gemini_chat(prov["key"], messages, system, prov["model"]))
+                chunks = gemini_stream(prov["key"], messages, system, prov["model"])
             else:
-                text = openai_compat_chat(prov["endpoint"], prov["key"], prov["model"], messages, system)
-            if text.strip():
+                chunks = openai_compat_stream(prov["endpoint"], prov["key"], prov["model"], messages, system)
+            for chunk in chunks:
+                text += chunk
+                yield "text", text
+            text = strip_think(text)
+            if text:
                 if len(_CACHE) > 300:
                     _CACHE.clear()
                 _CACHE[key] = (text, time.time())
-                return text, prov["name"], notes
+                yield "final", text, prov["name"], notes
+                return
             notes.append(f"{prov['name']}：沒有回傳內容")
         except Exception as err:
             if isinstance(err, urllib.error.HTTPError) and err.code == 429:
                 _COOLDOWNS[prov["id"]] = time.time() + 90
             notes.append(f"{prov['name']}：{describe_error(err)}")
+        if text:
+            yield ("reset",)
     raise RuntimeError("；".join(notes) or "沒有可用的模型服務")
+
+
+def _visible(text, brief=False):
+    """串流途中要給使用者看的部分：藏起推理段落、結尾的圖表標籤與還沒寫完的標籤。"""
+    cut = text.find("<think>")
+    while cut >= 0:
+        end = text.find("</think>", cut)
+        if end < 0:
+            text = text[:cut]
+            break
+        text = text[:cut] + text[end + len("</think>"):]
+        cut = text.find("<think>")
+    cut = text.find("<chart")
+    if cut >= 0:
+        text = text[:cut]
+    cut = text.rfind("<")
+    if cut >= 0 and ">" not in text[cut:] and len(text) - cut < 12:
+        text = text[:cut]
+    if brief:  # 簡報從第一個段落標題開始，和最後結果一致
+        first = re.search(r"^## ", text, re.M)
+        text = text[first.start():] if first else ""
+    return text.strip()
 
 
 # ==========================================
@@ -635,7 +682,15 @@ def brief_prompt(lang="zh", single_dept=None, role="cfo"):
 
 
 def chat(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT_TH, fresh=False, brief=False, limited=False):
-    """limited=True：此來源已超過使用次數上限（見 server.ai_allowed），只用快取答案，否則改由內建規則回覆。"""
+    """一次回傳完整結果（不支援串流的瀏覽器或串流失敗時使用）。"""
+    for event in chat_stream(year, depts, messages, ds, scope_note, lang, th, fresh, brief, limited):
+        if event["type"] == "done":
+            return {k: v for k, v in event.items() if k != "type"}
+
+
+def chat_stream(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT_TH, fresh=False, brief=False, limited=False):
+    """逐字回覆：先回 {"type": "delta"/"reset", "text"}，最後 {"type": "done", ...完整結果}。
+    limited=True：此來源已超過使用次數上限（見 server.ai_allowed），只用快取答案，否則改由內建規則回覆。"""
     question = messages[-1]["content"]
     conversation = [{"role": m["role"], "content": m["content"][:4000]} for m in messages[-12:]]
     while conversation and conversation[0]["role"] == "assistant":
@@ -650,8 +705,22 @@ def chat(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT
         rules = AI_RULES + chart_rules(depts, lang)
         systems = {"full": rules + json.dumps(facts, ensure_ascii=False),
                    "compact": rules + json.dumps(compact, ensure_ascii=False)}
+        shown = ""
         try:
-            reply, source, notes = llm_answer(conversation, systems, fresh and not limited, cache_only=limited)
+            for event in llm_stream(conversation, systems, fresh and not limited, cache_only=limited):
+                if event[0] == "reset":
+                    shown = ""
+                    yield {"type": "reset", "text": ""}
+                elif event[0] == "text":
+                    now = _visible(event[1], brief)
+                    if now.startswith(shown):
+                        if len(now) > len(shown):
+                            yield {"type": "delta", "text": now[len(shown):]}
+                    else:
+                        yield {"type": "reset", "text": now}
+                    shown = now
+                else:
+                    _, reply, source, notes = event
             reply, chart, picked = parse_chart_tag(reply, depts)
             first = re.search(r"^## ", reply, re.M)
             if brief and first:  # 一般對話規則要求「先一句結論」，簡報從第一個段落標題開始，避免和重點摘要重複
@@ -659,12 +728,14 @@ def chat(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT
             if not picked:
                 chart = keyword_chart(question, depts)
             check = verify_numbers(reply, facts)
-            return {"text": mark_unmatched(reply, check), "source": source, "mode": "ai", "notes": notes, "chart": chart,
-                    "check": {"exact": check["exact"], "derived": check["derived"], "unmatched": len(check["unmatched"])}}
+            yield {"type": "done", "text": mark_unmatched(reply, check), "source": source, "mode": "ai", "notes": notes, "chart": chart,
+                   "check": {"exact": check["exact"], "derived": check["derived"], "unmatched": len(check["unmatched"])}}
+            return
         except RuntimeError as err:
             note = core.tx(lang, "使用次數暫時達到上限，這次改由內建規則回覆；約一分鐘後可再使用 AI。",
                            "AI usage limit reached for now; this answer uses the built-in rules. Try AI again in about a minute.") if limited else str(err)
-            return {"text": rule_reply(question, year, depts, ds, lang, th), "source": rules_label, "mode": "limited" if limited else "fallback",
-                    "notes": [note], "chart": keyword_chart(question, depts), "check": None}
-    return {"text": rule_reply(question, year, depts, ds, lang, th), "source": rules_label, "mode": "rules", "notes": [],
-            "chart": keyword_chart(question, depts), "check": None}
+            yield {"type": "done", "text": rule_reply(question, year, depts, ds, lang, th), "source": rules_label,
+                   "mode": "limited" if limited else "fallback", "notes": [note], "chart": keyword_chart(question, depts), "check": None}
+            return
+    yield {"type": "done", "text": rule_reply(question, year, depts, ds, lang, th), "source": rules_label, "mode": "rules", "notes": [],
+           "chart": keyword_chart(question, depts), "check": None}

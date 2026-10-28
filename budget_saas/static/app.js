@@ -1110,25 +1110,79 @@ function ForecastTab({ data, theme, openDept }) {
 }
 
 // AI 主管預警簡報：在預警頁直接產生、查看並下載 PDF；依身分、資料集、年度與門檻分開暫存，切換頁籤回來不必重寫
+// 逐字顯示：讀伺服器的 Server-Sent Events，每收到一段就把目前全文交給 onText，最後回傳完整結果（含數字查核、圖表）。
+// 串流中斷或沒有結果時丟出錯誤，呼叫端改用一次回傳的舊端點。
+async function streamPost(url, payload, onText) {
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+  if (!r.ok || !r.body) throw new Error("stream");
+  // 模型一次送來一大段，畫面以固定節奏把字補上，落後越多補得越快，看起來是平順地逐字出現
+  let text = "", shown = 0;
+  const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const timer = setInterval(() => {
+    if (shown >= text.length) return;
+    shown = reduce ? text.length : Math.min(text.length, shown + Math.max(2, Math.ceil((text.length - shown) / 10)));
+    onText(text.slice(0, shown));
+  }, 33);
+  const caughtUp = () => new Promise((ok) => { const check = () => (shown >= text.length ? ok() : setTimeout(check, 33)); check(); });
+  try {
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, cut).trim();
+        buf = buf.slice(cut + 2);
+        if (!line.startsWith("data:")) continue;
+        const ev = JSON.parse(line.slice(5));
+        if (ev.type === "done") { await caughtUp(); delete ev.type; return ev; }
+        if (ev.type === "reset") { text = ev.text; shown = Math.min(shown, text.length); onText(text.slice(0, shown)); }
+        else text += ev.text;
+      }
+    }
+    throw new Error("stream");
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+const postJson = async (url, payload) => {
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+  if (!r.ok) throw new Error();
+  return r.json();
+};
+
 function BriefPanel({ data, state, go }) {
   const key = `brief:${chatKey(state)}:${data.year}:${(state.th || DEFAULT_TH).join()}:${state.depts.join(",")}:${state.lang || "zh"}`;
   const [brief, setBrief] = useState(() => { try { return JSON.parse(sessionStorage.getItem(key)); } catch (e) { return null; } });
   const [phase, setPhase] = useState("idle"); // idle | writing | error
+  const [draft, setDraft] = useState("");
   const [pdf, setPdf] = useState("idle"); // idle | busy | error
   const body = () => ({ year: data.year, depts: state.depts.join(","), ds: state.ds || "", viewRole: state.role, viewDept: state.roleDept || "",
     lang: state.lang || "zh", th: (state.th || DEFAULT_TH).join(",") });
   const write = async (fresh = false) => {
     setPhase("writing");
+    setDraft("");
+    const payload = { ...body(), fresh };
+    let res = null, shown = false;
     try {
-      const r = await fetch("/api/brief", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body(), fresh }) });
-      if (!r.ok) throw new Error();
-      const b = { ...(await r.json()), at: new Date().toLocaleString(state.lang === "en" ? "en-US" : "zh-TW", { hour12: false }) };
+      res = await streamPost("/api/brief/stream", payload, (text) => { shown = true; setDraft(text); });
+    } catch (e) {}
+    try {
+      // 還沒顯示任何字就斷線時改用一次回傳；已經寫到一半就不重送，避免重複呼叫 AI
+      if (!res && !shown) res = await postJson("/api/brief", payload);
+      if (!res) throw new Error();
+      const b = { ...res, at: new Date().toLocaleString(state.lang === "en" ? "en-US" : "zh-TW", { hour12: false }) };
       setBrief(b);
       try { sessionStorage.setItem(key, JSON.stringify(b)); } catch (e) {}
       setPhase("idle");
     } catch (e) {
       setPhase("error");
     }
+    setDraft("");
   };
   const download = async () => {
     setPdf("busy");
@@ -1153,6 +1207,14 @@ function BriefPanel({ data, state, go }) {
     }
     go("/assistant", question);
   };
+  if (phase === "writing" && draft) {
+    return html`<section class="card card-pad brief">
+      <div class="card-head"><h2 class="card-title"><${Icon} name="spark" size=${16} /> ${soleDept(data) ? t(`AI ${soleDept(data)}簡報`, `AI brief: ${dn(soleDept(data))}`) : t("AI 預警簡報", "AI alert brief")}</h2>
+        <span class="card-sub">${t("AI 撰寫中…", "AI is writing…")}</span></div>
+      <div class="md streaming" dangerouslySetInnerHTML=${{ __html: md(draft) }}></div>
+      <div class="msg-meta"><span class="src">${t("寫完後自動查核數字", "Numbers are checked when it finishes")}</span></div>
+    </section>`;
+  }
   if (!brief || phase === "writing") {
     return html`<div class="ai-banner">
       <${Icon} name="spark" size=${20} />
@@ -2038,6 +2100,7 @@ function Assistant({ data, state, theme }) {
   const [messages, setMessages] = useState(() => loadChat(key));
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState("");
   const [status, setStatus] = useState(null);
   const log = useRef(null);
   const box = useRef(null);
@@ -2051,6 +2114,11 @@ function Assistant({ data, state, theme }) {
     const timer = setTimeout(toEnd, 120);
     return () => clearTimeout(timer);
   }, [messages.length, busy]);
+  useEffect(() => {
+    // 逐字顯示時跟著捲動；使用者往上捲去看前文時就不打擾
+    const el = log.current;
+    if (el && draft && el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight;
+  }, [draft]);
   useEffect(() => {
     // 對話框填滿視窗剩餘高度；工具列在窄螢幕會換行，所以用實際位置計算而不是固定值
     const fit = () => {
@@ -2079,17 +2147,21 @@ function Assistant({ data, state, theme }) {
     setMessages(next);
     setInput("");
     setBusy(true);
+    setDraft("");
+    const payload = { year: state.year, depts: state.depts.join(","), ds: state.ds || "", viewRole: state.role, viewDept: state.roleDept || "", lang: state.lang || "zh", th: (state.th || DEFAULT_TH).join(","), messages: next.map((m) => ({ role: m.role, content: m.content.replace(MARK_RE, "") })) };
+    let a = null, shown = false;
     try {
-      const r = await fetch("/api/chat", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ year: state.year, depts: state.depts.join(","), ds: state.ds || "", viewRole: state.role, viewDept: state.roleDept || "", lang: state.lang || "zh", th: (state.th || DEFAULT_TH).join(","), messages: next.map((m) => ({ role: m.role, content: m.content.replace(MARK_RE, "") })) }),
-      });
-      if (!r.ok) throw new Error();
-      const a = await r.json();
+      a = await streamPost("/api/chat/stream", payload, (text) => { shown = true; setDraft(text); });
+    } catch (e) {}
+    try {
+      // 還沒顯示任何字就斷線時改用一次回傳；已經寫到一半就不重送，避免重複呼叫 AI
+      if (!a && !shown) a = await postJson("/api/chat", payload);
+      if (!a) throw new Error();
       setMessages([...next, { role: "assistant", content: a.text, mode: a.mode, source: a.source, check: a.check, chart: a.chart }]);
     } catch (e) {
-      setMessages([...next, { role: "assistant", content: "", error: t("連線失敗，這個問題沒有送出。", "Connection failed; the question was not sent.") }]);
+      setMessages([...next, { role: "assistant", content: "", error: shown ? t("回覆中斷了，請再試一次。", "The reply was cut off; please try again.") : t("連線失敗，這個問題沒有送出。", "Connection failed; the question was not sent.") }]);
     } finally {
+      setDraft("");
       setBusy(false);
       box.current && box.current.focus();
     }
@@ -2125,7 +2197,9 @@ function Assistant({ data, state, theme }) {
             <span class="starter-tag"><${Icon} name=${p.icon} size=${14} />${p.tag}</span>${p.q}
           </button>`)}</div>
         </div>`}
-        ${busy ? html`<div class="msg bot"><div class="bot-mark"><${Icon} name="spark" size=${16} /></div>
+        ${busy && draft ? html`<div class="msg bot"><div class="bot-mark"><${Icon} name="spark" size=${16} /></div>
+          <div class="bot-body"><div class="md streaming" dangerouslySetInnerHTML=${{ __html: md(draft) }}></div></div></div>`
+        : busy ? html`<div class="msg bot"><div class="bot-mark"><${Icon} name="spark" size=${16} /></div>
           <div class="bot-body typing"><span></span><span></span><span></span>${t(`正在分析 FY${data.year} 資料`, `Analysing FY${data.year} data`)}</div></div>` : null}
       </div>
       ${messages.length ? html`<div class="chips-row">${prompts.map((p) => html`<button type="button" class="prompt" disabled=${busy} onClick=${() => send(p.q, messages)}>${p.q}</button>`)}</div>` : null}

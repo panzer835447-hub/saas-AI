@@ -734,3 +734,14 @@ mark { background: var(--watch-soft); color: var(--watch-ink); padding: 0 4px; b
   .chk-detail { display: none; }
   .bubble { max-width: 88%; }
 }
+
+/* 逐字顯示：最後一段文字後面的閃爍游標 */
+.md.streaming > :last-child:not(ul):not(ol):not(table)::after,
+.md.streaming > :is(ul, ol):last-child > li:last-child::after {
+  content: ""; display: inline-block; width: 2px; height: 1.05em; margin-left: 2px;
+  vertical-align: -0.15em; background: var(--accent); border-radius: 1px;
+  animation: caret 1s steps(2, start) infinite;
+}
+@keyframes caret { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .md.streaming > :last-child:not(ul):not(ol):not(table)::after,
+.md.streaming > :is(ul, ol):last-child > li:last-child::after { animation: none; } }

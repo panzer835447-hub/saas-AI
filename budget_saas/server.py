@@ -6,6 +6,7 @@
 身分是展示用，正式導入時改由公司 SSO 帶入；部門主管的範圍在伺服器端強制套用。
 """
 import io
+import json
 import threading
 import time
 from collections import defaultdict, deque
@@ -16,7 +17,7 @@ from urllib.parse import quote
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -233,17 +234,41 @@ def chat_depts(req):
     return depts, head_note(req.viewRole, picked, req.lang)
 
 
-@app.post("/api/brief")
-def post_brief(req: BriefRequest, request: Request):
+def sse(events):
+    """把逐字事件包成 Server-Sent Events；X-Accel-Buffering 讓 Render 前面的代理不要整段緩衝。"""
+    def body():
+        for event in events:
+            yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+    return StreamingResponse(body(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def brief_events(req, request):
     """AI 主管預警簡報：固定寫作格式，沿用對話的資料、數字查核與備援。"""
     check_year(req.year, req.ds)
     depts, note = chat_depts(req)
     prompt = [{"role": "user", "content": ai.brief_prompt(req.lang, depts[0] if len(depts) == 1 else None, req.viewRole)}]
     th = core.parse_th(req.th)
-    res = ai.chat(req.year, depts, prompt, req.ds, note, req.lang, th, req.fresh, brief=True, limited=not ai_allowed(request))
-    if res["mode"] != "ai":  # 對話用的內建規則回答不了簡報格式，改用固定格式的規則簡報
-        res["text"] = report.rule_brief(req.year, depts, req.ds, req.lang, th)
-    return res
+    events = ai.chat_stream(req.year, depts, prompt, req.ds, note, req.lang, th, req.fresh, brief=True, limited=not ai_allowed(request))
+
+    def run():
+        for event in events:
+            if event["type"] == "done" and event["mode"] != "ai":  # 對話用的內建規則回答不了簡報格式，改用固定格式的規則簡報
+                event["text"] = report.rule_brief(req.year, depts, req.ds, req.lang, th)
+            yield event
+    return run()
+
+
+@app.post("/api/brief")
+def post_brief(req: BriefRequest, request: Request):
+    for event in brief_events(req, request):
+        if event["type"] == "done":
+            return {k: v for k, v in event.items() if k != "type"}
+
+
+@app.post("/api/brief/stream")
+def post_brief_stream(req: BriefRequest, request: Request):
+    return sse(brief_events(req, request))
 
 
 @app.post("/api/brief.pdf")
@@ -289,14 +314,23 @@ def get_ai_status():
     return ai.status()
 
 
-@app.post("/api/chat")
-def post_chat(req: ChatRequest, request: Request):
+def chat_args(req, request):
     check_year(req.year, req.ds)
     if req.messages[-1].role != "user" or not req.messages[-1].content.strip():
         raise HTTPException(422, "最後一則訊息必須是問題")
     depts, note = chat_depts(req)
-    return ai.chat(req.year, depts, [m.model_dump() for m in req.messages], req.ds, note, req.lang, core.parse_th(req.th),
-                   limited=not ai_allowed(request))
+    return dict(year=req.year, depts=depts, messages=[m.model_dump() for m in req.messages], ds=req.ds, scope_note=note,
+                lang=req.lang, th=core.parse_th(req.th), limited=not ai_allowed(request))
+
+
+@app.post("/api/chat")
+def post_chat(req: ChatRequest, request: Request):
+    return ai.chat(**chat_args(req, request))
+
+
+@app.post("/api/chat/stream")
+def post_chat_stream(req: ChatRequest, request: Request):
+    return sse(ai.chat_stream(**chat_args(req, request)))
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
