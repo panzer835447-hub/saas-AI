@@ -1,0 +1,18 @@
+# 定時喚醒 Render 免費方案：閒置 15 分鐘會休眠，下一位使用者要等 30–60 秒才打得開。
+# 每 10 分鐘連一次 /healthz（不讀資料、不呼叫 AI），讓組員和評審第一次打開也很快。
+# 公開 repo 的 GitHub Actions 不收費；GitHub 排程偶爾會延遲幾分鐘，所以間隔取 10 分鐘留餘裕。
+name: Keep Render awake
+
+on:
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"  # 避開整點，整點的排程最容易被 GitHub 延後
+  workflow_dispatch:  # 也可以在 Actions 頁面手動執行一次測試
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping /healthz
+        # 剛好在休眠中時第一次要等它醒來，所以最多等 90 秒、失敗再重試
+        run: curl --fail --silent --show-error --max-time 90 --retry 2 --retry-delay 10 https://budget-command-center.onrender.com/healthz
