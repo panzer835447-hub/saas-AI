@@ -95,7 +95,9 @@
 
 /* ---------- 彈出層：選單實心（頂部列是毛玻璃，毛玻璃裡無法再模糊）；說明小視窗毛玻璃、回彈出現 ---------- */
 [data-style="own"] .popover { background: var(--surface); border-radius: var(--r-lg); animation: own-pop .3s var(--spring); transform-origin: top left; }
-[data-style="own"] .info-pop { border-color: transparent; background: color-mix(in srgb, var(--surface) 84%, transparent); backdrop-filter: saturate(1.8) blur(24px); border-radius: var(--r-lg); animation: own-pop .3s var(--spring); }
+/* 說明框不透明：半透明時底下的文字會透出來，和說明文字疊在一起看不清楚 */
+[data-style="own"] .info-pop { background: var(--surface); border-color: var(--border-strong); border-radius: var(--r-lg); animation: own-pop .3s var(--spring); }
+[data-style="own"][data-theme="dark"] .info-pop { background: var(--raised); }
 @keyframes own-pop { from { opacity: 0; transform: scale(.94) translateY(-4px); } to { opacity: 1; transform: none; } }
 
 /* ---------- 對話框與抽屜：回彈進場、背景模糊 ---------- */

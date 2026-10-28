@@ -270,29 +270,58 @@ function usePopover() {
   return [open, setOpen, wrap];
 }
 
+// 把內容畫在 <body> 底下：卡片的進場動畫或 hover 會留下 transform，
+// 放在卡片裡的 position: fixed 會改以卡片為基準，位置跑掉、還會被相鄰卡片蓋住
+function Portal({ children }) {
+  const host = useRef(null);
+  if (!host.current) host.current = document.createElement("div");
+  useEffect(() => {
+    document.body.appendChild(host.current);
+    return () => { render(null, host.current); host.current.remove(); };
+  }, []);
+  useEffect(() => { render(children, host.current); });
+  return null;
+}
+
 // 「怎麼看」說明收在標題旁的 ⓘ：滑鼠移上去或點一下才顯示，平常畫面保持乾淨
 function Info({ children, label }) {
   const [open, setOpen, wrap] = usePopover();
   const [pinned, setPinned] = useState(false);
   const [pos, setPos] = useState(null);
+  const pop = useRef(null);
   const show = () => {
     // 固定定位並夾在畫面內，窄螢幕或靠右的圖示也不會超出畫面
     const r = wrap.current.getBoundingClientRect();
     const w = Math.min(340, window.innerWidth - 32);
-    setPos({ top: r.bottom + 6, left: Math.max(16, Math.min(r.left - 6, window.innerWidth - 16 - w)), maxWidth: w });
+    setPos({ top: r.bottom + 6, left: Math.max(16, Math.min(r.left - 6, window.innerWidth - 16 - w)), maxWidth: w, anchor: r });
     setOpen(true);
   };
+  useEffect(() => {
+    // 下方空間不夠時改放到圖示上方；兩邊都不夠就貼齊畫面底部
+    const el = pop.current;
+    if (!open || !pos || !el) return;
+    const h = el.offsetHeight;
+    if (pos.top + h <= window.innerHeight - 16) return;
+    const above = pos.anchor.top - 6 - h;
+    el.style.top = (above >= 16 ? above : Math.max(16, window.innerHeight - 16 - h)) + "px";
+  }, [open, pos]);
   useEffect(() => {
     if (!open) { setPinned(false); return; }
     const hide = () => setOpen(false); // 固定定位的說明框不會跟著捲動，捲動時直接收起
     window.addEventListener("scroll", hide, true);
     return () => window.removeEventListener("scroll", hide, true);
   }, [open]);
-  return html`<span class="info" ref=${wrap} onMouseEnter=${show} onMouseLeave=${() => !pinned && setOpen(false)}>
+  // 說明框不在圖示裡面，滑鼠從圖示移到說明框中間會先離開；稍等一下再收，移進說明框就取消
+  const leaving = useRef(null);
+  const stay = () => clearTimeout(leaving.current);
+  const leave = () => { stay(); if (!pinned) leaving.current = setTimeout(() => setOpen(false), 150); };
+  useEffect(() => stay, []);
+  return html`<span class="info" ref=${wrap} onMouseEnter=${() => { stay(); if (!open) show(); }} onMouseLeave=${leave}>
     <button type="button" class="info-btn" aria-expanded=${open} aria-label=${label || t("說明", "About this")}
       onClick=${() => { if (open && pinned) setOpen(false); else { show(); setPinned(true); } }}
       onFocus=${show} onBlur=${() => !pinned && setOpen(false)}><${Icon} name="info" size=${16} /></button>
-    ${open && pos ? html`<span class="info-pop" role="tooltip" style=${{ top: pos.top + "px", left: pos.left + "px", maxWidth: pos.maxWidth + "px" }}>${children}</span>` : null}
+    ${open && pos ? html`<${Portal}><span class="info-pop" role="tooltip" ref=${pop} style=${{ top: pos.top + "px", left: pos.left + "px", maxWidth: pos.maxWidth + "px" }}
+      onMouseEnter=${stay} onMouseLeave=${leave} onMouseDown=${(e) => e.stopPropagation()}>${children}</span></${Portal}>` : null}
   </span>`;
 }
 
