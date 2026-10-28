@@ -135,8 +135,45 @@ function EChart({ option, cls = "chart", label, height }) {
     ro.observe(ref.current);
     return () => { ro.disconnect(); inst.current.dispose(); inst.current = null; };
   }, []);
-  useEffect(() => { inst.current && inst.current.setOption(option, true); }, [option]);
+  useEffect(() => { inst.current && inst.current.setOption(styleChart(option), true); }, [option]);
   return html`<div ref=${ref} class=${cls} style=${height ? { height: height + "px" } : null} role="img" aria-label=${label}></div>`;
+}
+// 圖表外觀依設計 token 統一套用（平滑曲線、長條圓角、格線樣式、提示框深淺、線寬倍率、動畫時間），
+// 各張圖表自己的設定不用逐一修改；換版面風格時只要改 CSS token
+function styleChart(o) {
+  const num = (k, d) => { const v = parseFloat(css(k)); return Number.isFinite(v) ? v : d; };
+  const smooth = num("--chart-smooth", 0), r = num("--chart-bar-r", 4), lw = num("--chart-line-w", 1), glow = num("--chart-glow", 0);
+  const grid = css("--chart-grid") || "solid", dark = css("--chart-tooltip") === "dark";
+  const fix = (br) => (Array.isArray(br) ? br.map((x) => (x ? r : 0)) : typeof br === "number" && br ? r : br);
+  const ax = (a) => (a && a.splitLine && a.splitLine.show !== false
+    ? { ...a, splitLine: grid === "none" ? { show: false } : { ...a.splitLine, lineStyle: { ...(a.splitLine.lineStyle || {}), type: grid } } } : a);
+  const out = { ...o, animationDuration: num("--chart-anim", 500), animationEasing: "cubicOut" };
+  // 圖表聚焦只用在 6 條線以上的圖（例如 8 個部門的趨勢）：累計軌跡圖的今年、預測、預算、往年都是比較基準，不該被淡化；
+  // 其他線只淡到 35%，仍看得到走勢可以比較，提示框也照常列出所有數值
+  const focus = css("--chart-focus") === "1" && (o.series || []).filter((s) => s.type === "line" && !s.stack).length >= 6;
+  out.series = (o.series || []).map((s) => {
+    const n = { ...s };
+    if (s.type === "line") {
+      if (smooth && !s.stack) n.smooth = smooth;
+      if (focus && !s.stack) {
+        n.emphasis = { focus: "series", blurScope: "coordinateSystem", ...(s.emphasis || {}) };
+        n.blur = { lineStyle: { opacity: 0.35 }, itemStyle: { opacity: 0.35 }, label: { opacity: 0.35 } };
+      }
+      if (s.lineStyle && s.lineStyle.width) n.lineStyle = { ...s.lineStyle, width: s.lineStyle.width * lw };
+      // 主線柔光（--chart-glow，深色主題用）：只加在最粗的主線上
+      if (glow && s.lineStyle && s.lineStyle.width >= 3 && s.lineStyle.color) n.lineStyle = { ...n.lineStyle, shadowBlur: glow, shadowColor: s.lineStyle.color };
+    }
+    if (s.type === "bar") {
+      if (s.itemStyle && s.itemStyle.borderRadius != null) n.itemStyle = { ...s.itemStyle, borderRadius: fix(s.itemStyle.borderRadius) };
+      if (Array.isArray(s.data)) n.data = s.data.map((d) => (d && typeof d === "object" && d.itemStyle && d.itemStyle.borderRadius != null ? { ...d, itemStyle: { ...d.itemStyle, borderRadius: fix(d.itemStyle.borderRadius) } } : d));
+    }
+    return n;
+  });
+  out.xAxis = Array.isArray(o.xAxis) ? o.xAxis.map(ax) : ax(o.xAxis);
+  out.yAxis = Array.isArray(o.yAxis) ? o.yAxis.map(ax) : ax(o.yAxis);
+  if (o.tooltip) out.tooltip = { ...o.tooltip, borderWidth: dark ? 0 : 1, backgroundColor: dark ? css("--text") : css("--surface"),
+    textStyle: { ...(o.tooltip.textStyle || {}), color: dark ? css("--surface") : css("--text") }, extraCssText: `border-radius:${css("--r-md")};box-shadow:${css("--shadow-lg")}` };
+  return out;
 }
 const moneyAxis = (v) => (v === 0 ? "0" : LANG === "en"
   ? (Math.abs(v) >= 1e9 ? `${trim2(v / 1e9)}B` : `${trim2(v / 1e6)}M`)
@@ -157,7 +194,7 @@ const SHADOW_POINTER = () => ({ type: "shadow", shadowStyle: { color: css("--tex
 function baseChart() {
   return {
     animationDuration: 500,
-    textStyle: { fontFamily: "Inter, 'Noto Sans TC', sans-serif", color: css("--muted") },
+    textStyle: { fontFamily: css("--font"), color: css("--muted") },
     grid: { left: 8, right: 16, top: 28, bottom: 4, containLabel: true },
     tooltip: {
       trigger: "axis", backgroundColor: css("--surface"), borderColor: css("--border"), padding: [8, 12],
@@ -203,7 +240,7 @@ function Sidebar({ path, go, data, meta, role, openImport, openSettings }) {
       <div class="row"><span>${t(`FY${data.year} 結算進度`, `FY${data.year} closed`)}</span><b class="num">${data.cutoff} / 12</b></div>
       <div class="meter"><i style=${{ width: (data.cutoff / 12) * 100 + "%" }}></i></div>
       <div class="ds-line">
-        <${Icon} name=${info && info.source === "upload" ? "file" : "building"} size=${13} />
+        <${Icon} name=${info && info.source === "upload" ? "file" : "building"} size=${14} />
         <span title=${info && info.source === "upload" ? info.name : ""}>${info && info.source === "upload" ? info.name : t(`合成示範資料 · 量級 ${fmc((info ? info.scale : 30) * 1e8)}`, `Synthetic demo data · ${fmc((info ? info.scale : 30) * 1e8)}`)}</span>
       </div>
       <button type="button" class="ds-btn" disabled=${locked} onClick=${openImport}
@@ -254,9 +291,38 @@ function Info({ children, label }) {
   return html`<span class="info" ref=${wrap} onMouseEnter=${show} onMouseLeave=${() => !pinned && setOpen(false)}>
     <button type="button" class="info-btn" aria-expanded=${open} aria-label=${label || t("說明", "About this")}
       onClick=${() => { if (open && pinned) setOpen(false); else { show(); setPinned(true); } }}
-      onFocus=${show} onBlur=${() => !pinned && setOpen(false)}><${Icon} name="info" size=${15} /></button>
+      onFocus=${show} onBlur=${() => !pinned && setOpen(false)}><${Icon} name="info" size=${16} /></button>
     ${open && pos ? html`<span class="info-pop" role="tooltip" style=${{ top: pos.top + "px", left: pos.left + "px", maxWidth: pos.maxWidth + "px" }}>${children}</span>` : null}
   </span>`;
+}
+
+// 下拉選單：取代瀏覽器原生 <select>（原生清單由作業系統繪製，字型、圓角、配色都不跟網站設計）
+// 鍵盤：↑↓ 移動、Home／End、Enter 或空白鍵選取、Esc 關閉；以 listbox／option 角色提供給螢幕閱讀器
+function Select({ value, options, onChange, label, prefix, icon, cls = "ctl", numeric }) {
+  const [open, setOpen, wrap] = usePopover();
+  const [hi, setHi] = useState(0);
+  const list = useRef(null);
+  const idx = Math.max(0, options.findIndex((o) => o.value === value));
+  useEffect(() => { if (open) setHi(idx); }, [open]);
+  useEffect(() => { const el = open && list.current && list.current.children[hi]; if (el) el.scrollIntoView({ block: "nearest" }); }, [open, hi]);
+  const pick = (o) => { setOpen(false); if (o.value !== value) onChange(o.value); };
+  const key = (e) => {
+    if (!open) { if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) { e.preventDefault(); setOpen(true); } return; }
+    const go = { ArrowDown: Math.min(options.length - 1, hi + 1), ArrowUp: Math.max(0, hi - 1), Home: 0, End: options.length - 1 }[e.key];
+    if (go != null) { e.preventDefault(); setHi(go); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(options[hi]); }
+    else if (e.key === "Tab") setOpen(false);
+  };
+  return html`<div class="pop-wrap" ref=${wrap}>
+    <button type="button" class=${cls + " select-btn"} aria-haspopup="listbox" aria-expanded=${open} aria-label=${label} onClick=${() => setOpen(!open)} onKeyDown=${key}>
+      ${icon ? html`<${Icon} name=${icon} size=${16} />` : null}${prefix ? html`<span class="k">${prefix}</span>` : null}<b class=${numeric ? "num" : ""}>${options[idx] ? options[idx].label : ""}</b><${Icon} name="chevron" size=${14} />
+    </button>
+    ${open ? html`<ul class="popover menu" role="listbox" aria-label=${label} ref=${list}>
+      ${options.map((o, i) => html`<li role="option" aria-selected=${o.value === value} class=${"menu-opt" + (i === hi ? " hi" : "") + (numeric ? " num" : "")}
+        onMouseEnter=${() => setHi(i)} onMouseDown=${(e) => e.preventDefault()} onClick=${() => pick(o)}>
+        <span>${o.label}</span>${o.value === value ? html`<${Icon} name="check" size=${14} />` : null}</li>`)}
+    </ul>` : null}
+  </div>`;
 }
 
 function DeptPicker({ meta, depts, setDepts }) {
@@ -270,7 +336,7 @@ function DeptPicker({ meta, depts, setDepts }) {
   };
   return html`<div class="pop-wrap" ref=${wrap}>
     <button type="button" class="ctl" aria-expanded=${open} aria-haspopup="true" onClick=${() => setOpen(!open)}>
-      <${Icon} name="building" size=${15} /><span class="k">${t("部門", "Departments")}</span><b>${label}</b><${Icon} name="chevron" size=${14} />
+      <${Icon} name="building" size=${16} /><span class="k">${t("部門", "Departments")}</span><b>${label}</b><${Icon} name="chevron" size=${14} />
     </button>
     ${open ? html`<div class="popover" role="dialog" aria-label=${t("選擇部門", "Choose departments")}>
       <div class="head"><span>${t("選擇要分析的部門", "Departments to analyse")}</span><button type="button" onClick=${() => setDepts([])}>${t("全選", "Select all")}</button></div>
@@ -295,11 +361,10 @@ function RoleMenu({ meta, state, setRole }) {
         <input type="radio" name="role" checked=${state.role === k} onChange=${() => setRole(k, state.roleDept)} />
         <span><b>${t(...v.label)}</b><small>${t(...v.scope)}</small><em>${t(...v.help)}</em></span>
       </label>`)}
-      ${state.role === "head" ? html`<label class="role-dept"><span>${t("所屬部門", "Department")}</span>
-        <select value=${state.roleDept} onChange=${(e) => setRole("head", e.target.value)}>
-          ${meta.departments.map((d) => html`<option value=${d.name}>${dn(d.name)}</option>`)}
-        </select></label>` : null}
-      <p class="role-note"><${Icon} name="shield" size=${13} />${t("正式導入時由公司 SSO 帳號自動帶入，使用者不能自行切換。", "In production this comes from company SSO and users cannot switch it.")}</p>
+      ${state.role === "head" ? html`<div class="role-dept"><span>${t("所屬部門", "Department")}</span>
+        <${Select} label=${t("所屬部門", "Department")} value=${state.roleDept} onChange=${(v) => setRole("head", v)}
+          options=${meta.departments.map((d) => ({ value: d.name, label: dn(d.name) }))} /></div>` : null}
+      <p class="role-note"><${Icon} name="shield" size=${14} />${t("正式導入時由公司 SSO 帳號自動帶入，使用者不能自行切換。", "In production this comes from company SSO and users cannot switch it.")}</p>
     </div>` : null}
   </div>`;
 }
@@ -333,7 +398,7 @@ function ReportButton({ state, year }) {
   };
   return html`<button type="button" class=${"ghost-btn report-btn" + (err ? " err" : "")} disabled=${busy} onClick=${download} aria-live="polite"
     title=${t("下載目前年度與部門範圍的預算摘要報告（PDF）", "Download the budget summary for the current year and departments (PDF)")}>
-    <${Icon} name=${err ? "alert" : "download"} size=${15} /><span class="lbl">${busy ? t("產生中…", "Preparing…") : err ? t("下載失敗，請再試一次", "Download failed, try again") : t("摘要報告", "Summary PDF")}</span>
+    <${Icon} name=${err ? "alert" : "download"} size=${16} /><span class="lbl">${busy ? t("產生中…", "Preparing…") : err ? t("下載失敗，請再試一次", "Download failed, try again") : t("摘要報告", "Summary PDF")}</span>
   </button>`;
 }
 
@@ -342,16 +407,13 @@ function Topbar({ meta, state, set, setRole, setLang, theme, setTheme, go, openI
   const head = state.role === "head";
   const upload = meta.dataset.source === "upload";
   return html`<header class="topbar">
-    <div style="margin-right:8px">
+    <div class="topbar-title">
       <div class="crumb">${t("管理會計", "Management accounting")} / ${t(...route.label)}</div>
       <h1 class="page-title">${t(...(route.title || route.label))}</h1>
     </div>
     <div class="filters">
-      <label class="ctl"><span class="k">${t("會計年度", "Fiscal year")}</span>
-        <select class="num" value=${state.year} onChange=${(e) => set({ year: Number(e.target.value) })}>
-          ${meta.years.map((y) => html`<option value=${y}>FY${y}</option>`)}
-        </select>
-      </label>
+      <${Select} label=${t("會計年度", "Fiscal year")} prefix=${t("會計年度", "Fiscal year")} numeric value=${state.year}
+        options=${meta.years.map((y) => ({ value: y, label: `FY${y}` }))} onChange=${(year) => set({ year })} />
       ${head ? html`<span class="ctl locked" title=${t("部門主管只能查看本部門", "Department heads can only view their own department")}>
           <${Icon} name="lock" size=${14} /><span class="k">${t("部門", "Department")}</span><b>${dn(state.roleDept)}</b></span>`
         : html`<${DeptPicker} meta=${meta} depts=${state.depts} setDepts=${(depts) => set({ depts })} />`}
@@ -385,7 +447,7 @@ function Topbar({ meta, state, set, setRole, setLang, theme, setTheme, go, openI
         <${Icon} name=${theme === "dark" ? "sun" : "moon"} size=${16} />
       </button>
       <${ReportButton} state=${state} year=${state.year || meta.cutoff.year} />
-      <button type="button" class="btn-primary" onClick=${() => go("/assistant")}><${Icon} name="spark" size=${15} />${t("問 AI", "Ask AI")}</button>
+      <button type="button" class="btn-primary ask-btn" aria-label=${t("問 AI", "Ask AI")} onClick=${() => go("/assistant")}><${Icon} name="spark" size=${16} /><span class="lbl">${t("問 AI", "Ask AI")}</span></button>
       <${RoleMenu} meta=${meta} state=${state} setRole=${setRole} />
     </div>
   </header>`;
@@ -396,7 +458,7 @@ function AlertBanner({ data, openDept }) {
   const a = data.alert;
   const closed = data.cutoff >= 12;
   if (!a.count) {
-    return html`<section class="alert ok" aria-label=${t("系統預警", "System alert")}><div class="lead"><${Icon} name="check" size=${18} /><b>${closed ? t("這一年沒有部門超支超過 5%", "No department overspent by more than 5% this year") : t("目前沒有部門預估高風險超支", "No department is projected at high overspend risk")}</b></div></section>`;
+    return html`<section class="alert ok" aria-label=${t("系統預警", "System alert")}><div class="lead"><${Icon} name="check" size=${20} /><b>${closed ? t("這一年沒有部門超支超過 5%", "No department overspent by more than 5% this year") : t("目前沒有部門預估高風險超支", "No department is projected at high overspend risk")}</b></div></section>`;
   }
   const n = a.count, s = n > 1 ? "s" : "";
   return html`<section class="alert" aria-label=${t("系統預警", "System alert")}>
@@ -448,22 +510,18 @@ function Hero({ data, go }) {
 function Kpis({ data, compare }) {
   const tt = data.totals, p = data.prior;
   const gap = tt.spentPct - tt.planPct;
-  const range = (v) => Math.max(0, Math.min(100, ((v - 80) / 50) * 100)); // 使用率刻度 80%–130%
-  const kpi = (label, value, sub, extra) => html`<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value num">${value}</div><div class="kpi-sub">${sub}</div>${extra}</div>`;
+  const kpi = (label, value, sub) => html`<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value num">${value}</div><div class="kpi-sub">${sub}</div></div>`;
   const tone = (v, badWhenUp = true) => (Math.abs(v) < 0.05 ? "neutral" : (v > 0) === badWhenUp ? "up-bad" : "up-good");
   return html`<section class="card kpis" aria-label=${t("關鍵指標", "Key figures")}>
     ${kpi(t("年度總預算", "Annual budget"), fmc(tt.budget),
       p.budgetYoy != null ? html`<span class="num neutral">${p.budgetYoy >= 0 ? "▲" : "▼"} ${pct(Math.abs(p.budgetYoy))}</span> vs FY${p.year}` : t("選取部門合計", "Selected departments"))}
     ${compare === "prior" && p.actualYtd
       ? kpi(t(`已花費（1–${data.cutoff} 月）`, `Spent (${mon(1)}–${mon(data.cutoff)})`), fmc(tt.actualYtd),
-          html`<span class=${"num " + tone(p.ytdYoy)}>${pct(p.ytdYoy, true)}</span> ${t("vs 去年同期", "vs same period last year")} ${fmc(p.actualYtd)}`,
-          html`<div class="mini"><i style=${{ width: Math.min(100, (tt.actualYtd / Math.max(tt.actualYtd, p.actualYtd)) * 100) + "%" }}></i><b style=${{ left: Math.min(99, (p.actualYtd / Math.max(tt.actualYtd, p.actualYtd)) * 100) + "%" }}></b></div>`)
+          html`<span class=${"num " + tone(p.ytdYoy)}>${pct(p.ytdYoy, true)}</span> ${t("vs 去年同期", "vs same period last year")} ${fmc(p.actualYtd)}`)
       : kpi(t("已執行進度", "Spent so far"), pct(tt.spentPct),
-          html`${t("計畫", "Plan")} <span class="num">${pct(tt.planPct)}</span> · <span class=${"num " + tone(gap)}>${gap >= 0 ? "+" : ""}${gap.toFixed(1)} ${t("個百分點", "pp")}</span>`,
-          html`<div class="mini"><i style=${{ width: tt.spentPct + "%" }}></i><b style=${{ left: tt.planPct + "%" }}></b></div>`)}
+          html`${t("計畫", "Plan")} <span class="num">${pct(tt.planPct)}</span> · <span class=${"num " + tone(gap)}>${gap >= 0 ? "+" : ""}${gap.toFixed(1)} ${t("個百分點", "pp")}</span>`)}
     ${kpi(t("年底預算使用率", "Year-end budget use"), html`<span class=${{ high: "c-high", watch: "c-watch", lag: "c-lag", ok: "" }[STATUS_BY_USE(tt.usePct)]}>${pct(tt.usePct)}</span>`,
-      data.cutoff >= 12 ? t("全年實際數", "Full-year actual") : html`${t("P80 區間", "P80 range")} <span class="num">${pct(tt.lowPct)}–${pct(tt.highPct)}</span>`,
-      html`<div class="mini"><i style=${{ left: range(tt.lowPct) + "%", width: range(tt.highPct) - range(tt.lowPct) + "%", background: "color-mix(in srgb, var(--watch) 45%, transparent)" }}></i><b style=${{ left: range(100) + "%", background: "var(--muted)", width: "1px" }}></b><b style=${{ left: range(tt.usePct) + "%", background: "var(--watch)" }}></b></div>`)}
+      data.cutoff >= 12 ? t("全年實際數", "Full-year actual") : html`${t("P80 區間", "P80 range")} <span class="num">${pct(tt.lowPct)}–${pct(tt.highPct)}</span>`)}
     ${compare === "prior" && p.fullActual
       ? kpi(t("年底預估 vs 去年全年", "Year-end vs last full year"), pct((tt.forecast / p.fullActual - 1) * 100, true), html`${t(`FY${p.year} 全年實際`, `FY${p.year} actual`)} <span class="num">${fmc(p.fullActual)}</span>`)
       : kpi(data.cutoff >= 12 ? t("超支部門", "Departments over budget") : t("預估超支部門", "Departments over budget"), html`${tt.overCount} <small>/ ${data.departmentCount}</small>`, html`${t("年底差異", "Year-end gap")} <span class=${"num " + tone(tt.variance)}>${fmc(tt.variance, true)}</span>`)}
@@ -473,7 +531,8 @@ function Kpis({ data, compare }) {
 function trajectoryOption(data, compare, theme) {
   const s = data.series, accent = css("--accent"), cutoff = data.cutoff;
   const priorYears = data.history.slice(-2);
-  const greys = [css("--border-strong"), css("--muted")];
+  // 歷年線用兩階灰：都要和卡片底色有 3:1 以上對比，較近的年份較亮（邊線色太淡，深色模式幾乎看不見）
+  const greys = [css("--muted"), css("--text-2")];
   const over = data.totals.variance > 0;
   const o = baseChart();
   const lowName = t("區間下緣", "Range low"), bandName = t("P80 區間", "P80 range");
@@ -484,12 +543,12 @@ function trajectoryOption(data, compare, theme) {
     { name: bandName, type: "line", stack: "band", symbol: "none", lineStyle: { opacity: 0 }, areaStyle: { color: accent, opacity: theme === "dark" ? 0.18 : 0.12 }, data: m.map((_, i) => { const b = s.band.find((x) => x.m === i + 1); return b ? b.high - b.low : null; }) },
     ...priorYears.map((h, i) => ({
       name: t(`FY${h.year} 實際`, `FY${h.year} actual`), type: "line", symbol: "none", data: h.cum, z: 1,
-      lineStyle: { width: compare === "prior" && i === priorYears.length - 1 ? 2.5 : 1.5, color: compare === "prior" && i === priorYears.length - 1 ? css("--text-2") : greys[i] },
+      lineStyle: { width: compare === "prior" && i === priorYears.length - 1 ? 3 : 1.5, color: greys[i] },
       itemStyle: { color: greys[i] },
     })),
     { name: t("累計預算", "Cumulative budget"), type: "line", symbol: "none", data: s.budgetCum, lineStyle: { type: [2, 4], width: 1.5, color: css("--text") }, itemStyle: { color: css("--text") } },
     {
-      name: t("預測", "Forecast"), type: "line", symbol: "none", data: s.forecastCum, lineStyle: { type: [6, 5], width: 2.5, color: accent }, itemStyle: { color: accent },
+      name: t("預測", "Forecast"), type: "line", symbol: "none", data: s.forecastCum, lineStyle: { type: [6, 5], width: 3, color: accent }, itemStyle: { color: accent },
       markPoint: {
         symbol: "circle", symbolSize: 8, itemStyle: { color: over ? css("--high") : css("--ok") },
         label: { show: true, position: "left", distance: 8, formatter: () => cutoff >= 12 ? t(`全年 ${fmc(data.totals.forecast)}`, `Full year ${fmc(data.totals.forecast)}`) : t(`預估 ${fmc(data.totals.forecast)}`, `Forecast ${fmc(data.totals.forecast)}`), color: over ? css("--high-ink") : css("--ok-ink"), fontWeight: 600, fontSize: 12 },
@@ -498,9 +557,10 @@ function trajectoryOption(data, compare, theme) {
     },
     {
       name: t(`FY${data.year} 實際`, `FY${data.year} actual`), type: "line", data: s.actualCum, showSymbol: false, symbolSize: 8, lineStyle: { width: 3, color: accent }, itemStyle: { color: accent },
-      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: accent + "33" }, { offset: 1, color: accent + "00" }]) },
-      markPoint: { symbol: "circle", symbolSize: 9, itemStyle: { color: css("--surface"), borderColor: accent, borderWidth: 2.5 }, label: { show: false }, data: [{ coord: [cutoff - 1, s.actualCum[cutoff - 1]] }] },
-      markArea: { silent: true, label: { show: false }, itemStyle: { color: css("--raised"), opacity: 0.8 }, data: [[{ xAxis: m[cutoff - 1] }, { xAxis: m[11] }]] },
+      markPoint: { symbol: "circle", symbolSize: 8, itemStyle: { color: css("--surface"), borderColor: accent, borderWidth: 2.5 }, label: { show: false }, data: [{ coord: [cutoff - 1, s.actualCum[cutoff - 1]] }] },
+      // 底色維持單一；實際與預測的分界用一條垂直虛線標示，不再用色塊或漸層（兩種底色會像畫面出錯）
+      ...(cutoff < 12 ? { markLine: { silent: true, symbol: "none", lineStyle: { color: css("--series-muted"), type: [4, 4], width: 1 },
+        label: { show: true, position: "end", rotate: 0, formatter: t("預測 →", "Forecast →"), color: css("--muted"), fontSize: 11 }, data: [{ xAxis: m[cutoff - 1] }] } } : {}),
     },
   ];
   return o;
@@ -513,7 +573,7 @@ function Trajectory({ data, compare, theme }) {
   return html`<div class="card card-pad" style="min-width:0">
     <div class="card-head">
       <h2 class="card-title">${t("累計支出軌跡：今年 vs 預算 vs 歷年", "Cumulative spending: this year vs budget vs past years")}</h2>
-      <${Info}><p>${t("紫色實線高於點線（預算），代表花得比預算快；虛線是剩餘月份的預測，淡紫色帶是 P80 合理區間。", "The solid purple line above the dotted budget line means spending is ahead of budget. The dashed line is the forecast for the remaining months; the light band is the P80 likely range.")}</p></${Info}>
+      <${Info}><p>${t("彩色實線（今年實際）高於點線（預算），代表花得比預算快；彩色虛線是剩餘月份的預測，淡色帶是 P80 合理區間；垂直虛線右側是尚未發生的月份。灰線是前兩年，越亮越近。", "The coloured solid line (this year) above the dotted budget line means spending is ahead of budget. The coloured dashed line is the forecast for the remaining months, the light band is the P80 likely range, and everything right of the vertical dashed line is months that have not happened yet. Grey lines are the two previous years; the brighter one is more recent.")}</p></${Info}>
       <span class="card-sub">${data.cutoff >= 12 ? t("全年已結算", "Full year closed") : t(`${data.cutoff} 月後為預測`, `Forecast after ${mon(data.cutoff)}`)}${prev && y != null ? t(
         html` · 1–${data.cutoff} 月比 FY${prev.year} 同期${y >= 0 ? "多" : "少"}花 <b class="num">${pct(Math.abs(y))}</b>`,
         html` · ${mon(1)}–${mon(data.cutoff)} <b class="num">${pct(Math.abs(y))}</b> ${y >= 0 ? "above" : "below"} FY${prev.year}`) : null}</span>
@@ -521,7 +581,7 @@ function Trajectory({ data, compare, theme }) {
         <span><i class="sw" style=${{ borderColor: "var(--accent)" }}></i>${t(`FY${data.year} 實際`, `FY${data.year} actual`)}</span>
         <span><i class="sw" style=${{ borderColor: "var(--accent)", borderTopStyle: "dashed" }}></i>${t("預測", "Forecast")}</span>
         <span><i class="sw" style=${{ borderColor: "var(--text)", borderTopStyle: "dotted", borderTopWidth: "2px" }}></i>${t("預算", "Budget")}</span>
-        ${data.history.slice(-2).map((h, i) => html`<span><i class="sw" style=${{ borderColor: i ? "var(--muted)" : "var(--border-strong)", borderTopWidth: "2px" }}></i>FY${h.year}</span>`)}
+        ${data.history.slice(-2).map((h, i) => html`<span><i class="sw" style=${{ borderColor: i ? "var(--text-2)" : "var(--muted)", borderTopWidth: "2px" }}></i>FY${h.year}</span>`)}
       </div>
     </div>
     <${EChart} option=${option} label=${t(`累計支出軌跡，年底預估 ${fmc(data.totals.forecast)}，預算 ${fmc(data.totals.budget)}`, `Cumulative spending; year-end forecast ${fmc(data.totals.forecast)}, budget ${fmc(data.totals.budget)}`)} />
@@ -537,8 +597,8 @@ function Priority({ data, openDept, go }) {
       <span class=${"prio-bar bg-" + d.statusKey}></span>
       <span style="flex:1;min-width:0"><div class="prio-name">${dn(d.name)}</div><div class="prio-why">${d.reason || sl(d.statusKey)}</div></span>
       <span class=${"prio-amt num c-" + d.statusKey}>${fmc(d.variance, true)}<small>${pct(d.usePct)}</small></span>
-    </button>`) : html`<div class="empty" style="padding:32px 0">${t("所有部門都在正常範圍內", "Every department is within range")}</div>`}
-    ${slack > 0 ? html`<button type="button" class="prio-cta" style="margin-top:12px" onClick=${() => go("/assistant", t("建議如何把執行落後部門的結餘調撥給超支部門？", "How should we move unused budget from departments behind plan to those overspending?"))}>${t("評估調撥：可用結餘", "Explore reallocation: unused")} ${fmc(slack)}</button>` : null}
+    </button>`) : html`<div class="empty in-card">${t("所有部門都在正常範圍內", "Every department is within range")}</div>`}
+    ${slack > 0 ? html`<button type="button" class="prio-cta spaced" onClick=${() => go("/assistant", t("建議如何把執行落後部門的結餘調撥給超支部門？", "How should we move unused budget from departments behind plan to those overspending?"))}>${t("評估調撥：可用結餘", "Explore reallocation: unused")} ${fmc(slack)}</button>` : null}
   </div>`;
 }
 
@@ -552,19 +612,19 @@ function DeptTable({ data, compare, openDept }) {
   const rows = [...data.departments].sort(SORTS[sort]);
   const scale = (v) => Math.min(100, (v / 125) * 100); // 進度條刻度 0–125%，100% 在 80% 位置
   const th = (key, label, cls = "") => html`<th class=${"sortable " + cls} aria-sort=${sort === key ? "descending" : null} onClick=${() => setSort(key)}>${label}${sort === key ? " ↓" : ""}</th>`;
-  return html`<section class="card" style="overflow:hidden">
-    <div class="card-head" style="padding:16px 20px 0">
+  return html`<section class="card clip">
+    <div class="card-pad table-head"><div class="card-head">
       <h2 class="card-title">${t("部門執行明細", "Department detail")}</h2><span class="card-sub">${t("金額單位：新台幣萬元 · 點任一列查看部門細節", "Amounts in NT$ millions · click a row for details")}</span>
       <div class="legend right">
-        <span><i class="sw" style=${{ borderColor: "var(--accent)", borderTopWidth: "8px", width: "14px", borderRadius: "2px" }}></i>${t("已花", "Spent")}</span>
-        <span><i class="sw" style=${{ borderColor: "var(--est)", borderTopWidth: "8px", width: "14px", borderRadius: "2px" }}></i>${t("預計再花", "Still to spend")}</span>
-        <span><i style=${{ width: "2px", height: "12px", background: "var(--text)", display: "inline-block" }}></i>${t("預算 100%", "Budget 100%")}</span>
+        <span><i class="sw-block"></i>${t("已花", "Spent")}</span>
+        <span><i class="sw-block est"></i>${t("預計再花", "Still to spend")}</span>
+        <span><i class="sw-mark"></i>${t("預算 100%", "Budget 100%")}</span>
       </div>
-    </div>
+    </div></div>
     <div class="table-wrap"><table>
       <thead><tr>
         <th>${t("部門", "Department")}</th>${th("status", t("狀態", "Status"))}<th>${t("執行進度 → 年底", "Progress → year end")}</th>${th("use", t("年底使用率", "Year-end use"), "r")}${th("variance", t("預測差異", "Forecast gap"), "r")}
-        <th class="r">${compare === "prior" ? t("較去年同期", "vs last year") : t("同期執行率", "Spend vs plan")}</th><th>${t("主要原因", "Main driver")}</th>
+        <th class="r">${compare === "prior" ? t("較去年同期", "vs last year") : t("同期執行率", "Spend vs plan")}</th><th class="grow">${t("主要原因", "Main driver")}</th>
       </tr></thead>
       <tbody>${rows.map((d) => {
         const yoy = d.prevYtd ? (d.actualYtd / d.prevYtd - 1) * 100 : null;
@@ -575,10 +635,10 @@ function DeptTable({ data, compare, openDept }) {
             <span class="spent" style=${{ width: scale(d.spentPct) + "%" }}></span>
             <span class=${"est est-" + d.statusKey} style=${{ width: Math.max(0, scale(d.usePct) - scale(d.spentPct)) + "%" }}></span>
             <span class="mark"></span></div></td>
-          <td class="r num" style="font-weight:600">${pct(d.usePct)}</td>
+          <td class="r num fw-strong">${pct(d.usePct)}</td>
           <td class=${"r num c-" + d.statusKey}>${wan(d.variance, true)}</td>
           <td class="r num">${compare === "prior" ? (yoy == null ? "—" : pct(yoy, true)) : pct(d.execRate)}</td>
-          <td class="why" title=${d.reason}>${d.reason || html`<span style="color:var(--muted)">—</span>`}</td>
+          <td class="why grow" title=${d.reason}>${d.reason || html`<span class="text-muted">—</span>`}</td>
         </tr>`;
       })}</tbody>
     </table></div>
@@ -592,8 +652,8 @@ function deptMonthlyOption(d) {
   o.legend = { top: 0, left: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: css("--text-2"), fontSize: 12 } };
   o.grid.top = 32;
   o.series = [
-    { name: t("實際", "Actual"), type: "bar", stack: "s", barMaxWidth: 18, data: d.monthly.actual, itemStyle: { color: css("--accent"), borderRadius: [3, 3, 0, 0] } },
-    { name: t("預估", "Estimate"), type: "bar", stack: "s", barMaxWidth: 18, data: d.monthly.estimate, itemStyle: { color: css("--est"), borderRadius: [3, 3, 0, 0] } },
+    { name: t("實際", "Actual"), type: "bar", stack: "s", barMaxWidth: 16, data: d.monthly.actual, itemStyle: { color: css("--accent"), borderRadius: [4, 4, 0, 0] } },
+    { name: t("預估", "Estimate"), type: "bar", stack: "s", barMaxWidth: 16, data: d.monthly.estimate, itemStyle: { color: css("--est"), borderRadius: [4, 4, 0, 0] } },
     { name: t("預算", "Budget"), type: "line", step: "middle", symbol: "none", data: d.monthly.budget, lineStyle: { color: css("--text"), width: 1.5, type: [3, 3] }, itemStyle: { color: css("--text") } },
   ];
   return o;
@@ -606,8 +666,8 @@ function deptHistoryOption(d, year) {
   o.yAxis = { ...o.yAxis, min: (v) => Math.min(60, Math.floor(v.min / 10) * 10), axisLabel: { color: css("--muted"), formatter: "{value}%" } };
   o.tooltip = { ...o.tooltip, formatter: (ps) => `<b>${ps[0].axisValue}</b><br>${t("預算使用率", "Budget use")}　<b>${pct(ps[0].value)}</b>` };
   o.series = [{
-    type: "bar", barMaxWidth: 28,
-    data: [...d.history.map((h) => ({ value: h.use, itemStyle: { color: css("--border-strong") } })), { value: d.usePct, itemStyle: { color: css(tone[d.statusKey]) } }],
+    type: "bar", barMaxWidth: 24,
+    data: [...d.history.map((h) => ({ value: h.use, itemStyle: { color: css("--series-muted") } })), { value: d.usePct, itemStyle: { color: css(tone[d.statusKey]) } }],
     itemStyle: { borderRadius: [4, 4, 0, 0] },
     label: { show: true, position: "top", formatter: (p) => pct(p.value), color: css("--text-2"), fontSize: 11 },
     markLine: { silent: true, symbol: "none", lineStyle: { color: css("--text"), type: [3, 3] }, label: { show: false }, data: [{ yAxis: 100 }] },
@@ -629,8 +689,8 @@ function Drawer({ dept, data, theme, close, go }) {
   <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
     <div class="drawer-head">
       <div style="flex:1">
-        <h2 id="drawer-title" style="font-size:20px">${dn(dept.name)}</h2>
-        <div style="margin-top:4px"><span class=${"tag " + dept.statusKey}>${sl(dept.statusKey)}</span>${dept.reason ? html`<span class="card-sub" style="margin-left:8px">${dept.reason}</span>` : null}</div>
+        <h2 id="drawer-title" class="drawer-title">${dn(dept.name)}</h2>
+        <div class="drawer-meta"><span class=${"tag " + dept.statusKey}>${sl(dept.statusKey)}</span>${dept.reason ? html`<span class="card-sub">${dept.reason}</span>` : null}</div>
       </div>
       <button type="button" class="icon-btn" aria-label=${t("關閉", "Close")} ref=${closeRef} onClick=${close}><${Icon} name="close" size=${16} /></button>
     </div>
@@ -652,8 +712,8 @@ function Drawer({ dept, data, theme, close, go }) {
         <div class="section-title">${t("歷年預算使用率", "Budget use by year")}<${Info}><p>${t("灰色為過去完整年度的實際使用率；彩色為今年的年底預估。", "Grey = actual use in past complete years; coloured = this year's year-end forecast.")}</p></${Info}></div>
         <${EChart} option=${hist} cls="chart-sm" label=${t(`${dept.name}歷年預算使用率`, `${dn(dept.name)} budget use by year`)} />
       </div>
-      <button type="button" class="btn-primary" style="justify-content:center;height:40px" onClick=${() => go("/assistant", t(`分析${dept.name}今年的預算執行狀況，和往年相比有什麼差異？建議怎麼處理？`, `Analyse ${dn(dept.name)}'s budget this year: how does it differ from past years, and what should we do?`))}>
-        <${Icon} name="spark" size=${15} />${t(`請 AI 分析${dept.name}`, `Ask AI about ${dn(dept.name)}`)}
+      <button type="button" class="btn-primary btn-block" onClick=${() => go("/assistant", t(`分析${dept.name}今年的預算執行狀況，和往年相比有什麼差異？建議怎麼處理？`, `Analyse ${dn(dept.name)}'s budget this year: how does it differ from past years, and what should we do?`))}>
+        <${Icon} name="spark" size=${16} />${t(`請 AI 分析${dept.name}`, `Ask AI about ${dn(dept.name)}`)}
       </button>
     </div>
   </aside>`;
@@ -714,7 +774,7 @@ function ytdVarianceOption(rows) {
   o.tooltip.formatter = (p) => { const r = sorted[p.dataIndex]; return `<b>${dn(r.name)}</b><br>${t("實際", "Actual")} ${fmc(r.actualYtd)} / ${t("同期預算", "budget to date")} ${fmc(r.budgetYtd)}<br>${t("差異", "Variance")} <b>${fmc(r.v, true)}</b>（${pct(r.vPct, true)}）`; };
   o.series = [{
     type: "bar", barMaxWidth: 16,
-    data: sorted.map((r) => ({ value: r.v, itemStyle: { color: css(r.v > 0 ? "--high" : "--lag"), borderRadius: r.v > 0 ? [0, 3, 3, 0] : [3, 0, 0, 3] } })),
+    data: sorted.map((r) => ({ value: r.v, itemStyle: { color: css(r.v > 0 ? "--high" : "--lag"), borderRadius: r.v > 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] } })),
     label: { show: true, position: "right", formatter: (p) => `${fmc(p.value, true)} (${pct(sorted[p.dataIndex].vPct, true)})`, color: css("--text-2"), fontSize: 11 },
   }];
   return o;
@@ -754,14 +814,14 @@ function VarianceTab({ data, openDept }) {
       <div class="kpi"><div class="kpi-label">${t("差異最大的部門", "Largest variance")}</div><div class="kpi-value">${dn(big.name)}</div>
         <div class="kpi-sub"><span class=${"num " + (big.v > 0 ? "up-bad" : "c-lag")}>${fmc(big.v, true)} (${pct(big.vPct, true)})</span></div></div>
     </section>
-    <section class="card card-pad">
-      <div class="card-head"><h2 class="card-title">${t(`截至 ${data.cutoff} 月，誰花得比預算多？`, `Through ${mon(data.cutoff)}, who spent more than planned?`)}</h2>
-        <${Info}><p>${t("差異＝實際支出 − 同期預算。", "Variance = actual spending − budget to date.")}</p><p>${t("中線＝剛好等於同期預算；往右（紅）＝已超出同期預算，往左（藍）＝花得比計畫慢。", "Centre line = exactly on budget to date. Right (red) = over plan; left (blue) = spending slower than planned.")}</p></${Info}></div>
-      <${EChart} option=${opt} label=${t("各部門同期差異", "Variance to date by department")} />
-    </section>
-    <section>
+    <section class="duo">
+      <div class="card card-pad">
+        <div class="card-head"><h2 class="card-title">${t(`截至 ${data.cutoff} 月，誰花得比預算多？`, `Through ${mon(data.cutoff)}, who spent more than planned?`)}</h2>
+          <${Info}><p>${t("差異＝實際支出 − 同期預算。", "Variance = actual spending − budget to date.")}</p><p>${t("中線＝剛好等於同期預算；往右（紅）＝已超出同期預算，往左（藍）＝花得比計畫慢。", "Centre line = exactly on budget to date. Right (red) = over plan; left (blue) = spending slower than planned.")}</p></${Info}></div>
+        <${EChart} option=${opt} label=${t("各部門同期差異", "Variance to date by department")} />
+      </div>
       <div class="card">
-        <div class="card-pad" style="padding-bottom:10px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("差異明細", "Variance detail")}</h2><span class="card-sub">${unit()} · ${t("點一列看部門細節", "click a row for details")}</span></div></div>
+        <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("差異明細", "Variance detail")}</h2><span class="card-sub">${unit()} · ${t("點一列看部門細節", "click a row for details")}</span></div></div>
         <div class="table-wrap"><table class="compact">
           <thead><tr><th>${t("部門", "Department")}</th><th class="r">${t("同期預算", "Budget to date")}</th><th class="r">${t("實際", "Actual")}</th><th class="r">${t("差異", "Variance")}</th><th class="r">${t("差異率", "Variance %")}</th><th>${t("每月差異率", "Monthly variance")}</th></tr></thead>
           <tbody>${sorted.map((r) => html`<tr onClick=${() => openDept(r.id)}>
@@ -774,7 +834,7 @@ function VarianceTab({ data, openDept }) {
       </div>
     </section>
     <section class="card">
-      <div class="card-pad" style="padding-bottom:6px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("哪幾個月、哪些部門偏離當月預算？", "Which months and departments drifted from the monthly budget?")}</h2>
+      <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("哪幾個月、哪些部門偏離當月預算？", "Which months and departments drifted from the monthly budget?")}</h2>
         <${Info}><p>${t("每格＝（實際 − 當月預算）÷ 當月預算，只顯示已結算月份。", "Each cell = (actual − monthly budget) ÷ monthly budget, closed months only.")}</p><p>${t("紅色＝那個月花超過當月預算，整排都紅的部門最值得追問原因。年底集中支出的部門（行銷、人資、核保、財務）前三季會偏藍，這是預算時程的特性，不一定是問題。",
         "Red = that month exceeded its budget; a whole red row is the first thing to ask about. Departments that spend late in the year (Marketing, HR, Underwriting, Finance) look blue through Q1–Q3; that is their budget timing, not necessarily a problem.")}</p></${Info}>
         <span class="card-sub">${t("點一列看部門細節", "Click a row for details")}</span></div></div>
@@ -797,9 +857,9 @@ function utilOption(rows) {
   o.tooltip.formatter = (p) => { const r = sorted[p.dataIndex]; return `<b>${dn(r.name)}</b><br>${t("同期執行率", "Spend vs plan")} <b>${pct(r.execRate)}</b><br>${t("實際", "Actual")} ${fmc(r.actualYtd)} / ${t("同期預算", "budget to date")} ${fmc(r.budgetYtd)}`; };
   o.series = [{
     type: "bar", barMaxWidth: 16,
-    data: sorted.map((r) => ({ value: r.execRate, itemStyle: { color: css(tone[paceKey(r.execRate)]), borderRadius: [0, 3, 3, 0] } })),
+    data: sorted.map((r) => ({ value: r.execRate, itemStyle: { color: css(tone[paceKey(r.execRate)]), borderRadius: [0, 4, 4, 0] } })),
     label: { show: true, position: "right", formatter: "{c}%", color: css("--text"), fontSize: 11 },
-    markArea: { silent: true, label: { show: false }, itemStyle: { color: css("--ok-soft"), opacity: 0.7 }, data: [[{ xAxis: TH.lag }, { xAxis: 100 }]] },
+    markArea: { silent: true, label: { show: true, position: "insideTop", formatter: t("正常範圍", "Normal range"), color: css("--muted"), fontSize: 11 }, itemStyle: { color: css("--ok-soft"), opacity: 0.7 }, data: [[{ xAxis: TH.lag }, { xAxis: 100 }]] },
     markLine: { silent: true, symbol: "none", lineStyle: { color: css("--text"), width: 1.5, type: "solid" },
       label: { formatter: t("100%＝照預算進度", "100% = on plan"), position: "end", color: css("--muted"), fontSize: 11 }, data: [{ xAxis: 100 }] },
   }];
@@ -823,7 +883,7 @@ function UtilTab({ data, openDept }) {
       <${EChart} option=${opt} cls="chart chart-tall" label=${t("各部門同期執行率", "Spend vs plan by department")} />
     </section>
     <section class="card">
-      <div class="card-pad" style="padding-bottom:10px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("三種使用率對照", "Three utilisation measures")}</h2>
+      <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("三種使用率對照", "Three utilisation measures")}</h2>
         <span class="card-sub">${t("直線標記 = 100% · 點一列看部門細節", "Tick = 100% · click a row for details")}</span></div></div>
       <div class="table-wrap"><table>
         <thead><tr><th>${t("部門", "Department")}</th><th>${t("狀態", "Status")}</th><th>${t("同期執行率", "Spend vs plan")}<br /><span class="th-sub">${t("實際 ÷ 同期預算", "actual ÷ budget to date")}</span></th><th>${t("全年使用率", "Annual use so far")}<br /><span class="th-sub">${t("實際 ÷ 年度預算", "actual ÷ annual budget")}</span></th><th>${t("預測使用率", "Forecast use")}<br /><span class="th-sub">${t("年底預估 ÷ 年度預算", "year-end forecast ÷ annual budget")}</span></th></tr></thead>
@@ -849,12 +909,12 @@ function companyHistoryOption(data) {
   // 年底預估用與部門燈號相同的門檻（105 / 102 / 90），和總覽頁的顏色一致
   const curTone = { high: "--high", watch: "--watch", lag: "--lag", ok: "--ok" }[STATUS_BY_USE(tt.usePct)] || "--accent";
   o.series = [
-    { name: t("年度預算", "Annual budget"), type: "bar", barMaxWidth: 26, barGap: "12%", data: [...data.history.map((h) => h.budget), tt.budget], itemStyle: { color: css("--border-strong"), borderRadius: [4, 4, 0, 0] } },
-    { name: t("實際支出", "Actual"), type: "bar", stack: "a", barMaxWidth: 26, data: [...data.history.map((h) => h.actual), tt.actualYtd],
+    { name: t("年度預算", "Annual budget"), type: "bar", barMaxWidth: 24, barGap: "12%", data: [...data.history.map((h) => h.budget), tt.budget], itemStyle: { color: css("--series-muted"), borderRadius: [4, 4, 0, 0] } },
+    { name: t("實際支出", "Actual"), type: "bar", stack: "a", barMaxWidth: 24, data: [...data.history.map((h) => h.actual), tt.actualYtd],
       itemStyle: { color: css("--accent"), borderRadius: open ? 0 : [4, 4, 0, 0] },
       label: { show: true, position: "top", color: css("--text-2"), fontSize: 11,
         formatter: (p) => (p.dataIndex < data.history.length ? `${Math.round((data.history[p.dataIndex].actual / data.history[p.dataIndex].budget) * 100)}%` : open ? "" : `${Math.round(tt.spentPct)}%`) } },
-    ...(open ? [{ name: t("今年預估剩餘", "Rest-of-year forecast"), type: "bar", stack: "a", barMaxWidth: 26, data: [...data.history.map(() => null), tt.forecast - tt.actualYtd],
+    ...(open ? [{ name: t("今年預估剩餘", "Rest-of-year forecast"), type: "bar", stack: "a", barMaxWidth: 24, data: [...data.history.map(() => null), tt.forecast - tt.actualYtd],
       itemStyle: { color: css(curTone), opacity: 0.55, borderRadius: [4, 4, 0, 0], decal: { symbol: "rect", dashArrayX: [1, 0], dashArrayY: [3, 5], rotation: -0.8, color: "rgba(255,255,255,.35)" } },
       label: { show: true, position: "top", formatter: t(`預估 ${Math.round(tt.usePct)}%`, `Fcst ${Math.round(tt.usePct)}%`), color: css("--text"), fontSize: 11 } }] : []),
   ];
@@ -879,7 +939,7 @@ function deptTrendOption(data) {
     // 實線＝完整年度實際；點線延伸到今年年底預估，避免把年初至今的金額當成全年比較
     const dotted = years.map((y) => (last && y === last.year ? last.actual : y === data.year ? d.forecast : null));
     return [
-      { name: dn(d.name), type: "line", data: solid, symbolSize: 5, lineStyle: { color: d.color, width: 2.2 }, itemStyle: { color: d.color } },
+      { name: dn(d.name), type: "line", data: solid, symbolSize: 6, lineStyle: { color: d.color, width: 2 }, itemStyle: { color: d.color } },
       { name: dn(d.name) + " ", type: "line", data: dotted, connectNulls: true, symbol: "emptyCircle", symbolSize: (v, p) => (p.dataIndex === years.length - 1 ? 8 : 0),
         lineStyle: { color: d.color, width: 2, type: [3, 3] }, itemStyle: { color: d.color }, legendHoverLink: false },
     ];
@@ -901,14 +961,15 @@ function HistoryTab({ data, theme, openDept }) {
         <span class="card-sub">${t("柱上百分比＝執行率（實際 ÷ 預算）", "Labels = actual ÷ budget")}</span></div>
       <${EChart} option=${coOpt} cls="chart chart-tall" label=${t("歷年預算與實際支出", "Budget and actual by year")} />
     </section>
-    <section class="card card-pad">
+    <section class=${years.length ? "duo" : "stack"}>
+    <div class="card card-pad">
       <div class="card-head"><h2 class="card-title">${t("各部門歷年實際支出", "Annual spending by department")}</h2>
         <${Info}><p>${t(`實線為完整年度實際支出；點線延伸到 FY${data.year} 年底預估（空心圓）。突然跳升的年份通常有一次性支出。`, `Solid lines are complete-year actuals; dotted segments run to the FY${data.year} year-end forecast (hollow circle). Sudden jumps usually come from one-off spending.`)}</p></${Info}>
         <span class="card-sub">${t("點圖例可隱藏部門", "Click the legend to hide a department")}</span></div>
       <${EChart} option=${trendOpt} cls="chart chart-tall" label=${t("各部門歷年實際支出", "Annual spending by department")} />
-    </section>
-    ${years.length ? html`<section class="card">
-      <div class="card-pad" style="padding-bottom:10px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("歷年預算執行率（實際 ÷ 預算）", "Budget execution by year (actual ÷ budget)")}</h2><span class="card-sub">${t("含一次性支出；超過 100% 代表當年超支 · 最後一欄為今年預估", "Includes one-offs; above 100% means the year overspent · last column is this year's forecast")}</span></div></div>
+    </div>
+    ${years.length ? html`<div class="card">
+      <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("歷年預算執行率（實際 ÷ 預算）", "Budget execution by year (actual ÷ budget)")}</h2><span class="card-sub">${t("含一次性支出；超過 100% 代表當年超支 · 最後一欄為今年預估", "Includes one-offs; above 100% means the year overspent · last column is this year's forecast")}</span></div></div>
       <div class="table-wrap"><table class="exec">
         <thead><tr><th>${t("部門", "Department")}</th>${years.map((y) => html`<th class="r">FY${y}</th>`)}<th class="r">${t(`FY${data.year} 預估`, `FY${data.year} fcst`)}</th></tr></thead>
         <tbody>${data.departments.map((d) => html`<tr onClick=${() => openDept(d.id)}>
@@ -917,7 +978,8 @@ function HistoryTab({ data, theme, openDept }) {
           <td class="r num"><span class=${"rate strong " + d.statusKey}>${pct(d.usePct)}</span></td>
         </tr>`)}</tbody>
       </table></div>
-    </section>` : null}`;
+    </div>` : null}
+    </section>`;
 }
 
 function Analysis({ data, theme, go }) {
@@ -955,8 +1017,8 @@ function monthlyOption(data) {
   o.legend = { top: 0, left: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: css("--text-2"), fontSize: 12 } };
   o.grid.top = 32;
   o.series = [
-    { name: t("已結算實際", "Closed actual"), type: "bar", stack: "m", barMaxWidth: 22, data: s.monthlyActual, itemStyle: { color: css("--accent"), borderRadius: [3, 3, 0, 0] } },
-    { name: t("剩餘月份預估", "Remaining estimate"), type: "bar", stack: "m", barMaxWidth: 22, data: s.monthlyEstimate, itemStyle: { color: css("--est"), borderRadius: [3, 3, 0, 0] } },
+    { name: t("已結算實際", "Closed actual"), type: "bar", stack: "m", barMaxWidth: 24, data: s.monthlyActual, itemStyle: { color: css("--accent"), borderRadius: [4, 4, 0, 0] } },
+    { name: t("剩餘月份預估", "Remaining estimate"), type: "bar", stack: "m", barMaxWidth: 24, data: s.monthlyEstimate, itemStyle: { color: css("--est"), borderRadius: [4, 4, 0, 0] } },
     { name: t("每月預算", "Monthly budget"), type: "line", step: "middle", symbol: "none", data: s.monthlyBudget, lineStyle: { color: css("--text"), width: 1.5, type: [3, 3] }, itemStyle: { color: css("--text") } },
   ];
   return o;
@@ -1028,12 +1090,12 @@ function ForecastTab({ data, theme, openDept }) {
       </div>
     </section>
     <section class="card">
-      <div class="card-pad" style="padding-bottom:12px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("各部門年底預估拆解", "Year-end forecast by department")}</h2>
-        <${Info}><p>${t("年底預估＝55% 季節性推估＋45% 依目前速度推估。", "Year-end forecast = 55% seasonal estimate + 45% current-pace estimate.")}</p><p>${t("「依目前速度」假設剩餘月份照今年至今的「實際 ÷ 預算」比例花用；「季節性」依歷年同期累計占全年的比例回推全年，能反映年底集中請款。", "Current pace assumes the remaining months keep this year's actual-to-budget ratio; seasonal scales up using the share of the full year that past years had spent by this month, which captures year-end spending.")}</p></${Info}>
+      <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("各部門年底預估拆解", "Year-end forecast by department")}</h2>
+        <${Info}><p>${t("年底預估＝55% 季節性推估＋45% 依目前速度推估。", "Year-end forecast = 55% seasonal estimate + 45% current-pace estimate.")}</p><p>${t(`季節性與合理區間依各部門過去 ${[...new Set(rows.map((r) => r.historyYears))].join("／")} 個完整年度的同期資料估計。`, `The seasonal estimate and likely range use ${[...new Set(rows.map((r) => r.historyYears))].join("/")} complete past years of same-period data.`)}</p><p>${t("「依目前速度」假設剩餘月份照今年至今的「實際 ÷ 預算」比例花用；「季節性」依歷年同期累計占全年的比例回推全年，能反映年底集中請款。", "Current pace assumes the remaining months keep this year's actual-to-budget ratio; seasonal scales up using the share of the full year that past years had spent by this month, which captures year-end spending.")}</p></${Info}>
         <span class="card-sub">${unit()} · ${t("點一列看部門細節", "click a row for details")}</span></div></div>
       <div class="table-wrap"><table>
         <thead><tr><th>${t("部門", "Department")}</th><th>${t("狀態", "Status")}</th><th class="r">${t("全年預算", "Budget")}</th><th class="r">${t("已支出", "Spent")}</th><th class="r">${t("剩餘預估", "Remaining")}</th><th class="r">${t("年底預估", "Year-end")}</th>
-          <th class="r">${t("差額", "Gap")}</th><th class="r">${t("差額率", "Gap %")}</th><th class="r">${t("依目前速度", "Current pace")}</th><th class="r">${t("季節性推估", "Seasonal")}</th><th class="r">${t("合理區間", "Likely range")}</th><th class="r">${t("歷史年數", "History yrs")}</th></tr></thead>
+          <th class="r">${t("差額", "Gap")}</th><th class="r">${t("差額率", "Gap %")}</th><th class="r">${t("依目前速度", "Current pace")}</th><th class="r">${t("季節性推估", "Seasonal")}</th><th class="r">${t("合理區間", "Likely range")}</th></tr></thead>
         <tbody>${rows.map((d) => html`<tr onClick=${() => openDept(d.id)}>
           <td><div class="dept-cell">${dn(d.name)}</div></td>
           <td><span class=${"tag " + d.statusKey}>${sl(d.statusKey)}</span></td>
@@ -1041,7 +1103,7 @@ function ForecastTab({ data, theme, openDept }) {
           <td class="r num"><b>${wan(d.forecast)}</b></td>
           <td class=${"r num c-" + d.statusKey}>${wan(d.variance, true)}</td><td class=${"r num c-" + d.statusKey}>${pct(d.variancePct, true)}</td>
           <td class="r num">${wan(d.runRate)}</td><td class="r num">${d.seasonal == null ? "—" : wan(d.seasonal)}</td>
-          <td class="r num">${wan(d.low)}–${wan(d.high)}</td><td class="r num">${d.historyYears}</td>
+          <td class="r num">${wan(d.low)}–${wan(d.high)}</td>
         </tr>`)}</tbody>
       </table></div>
     </section>`;
@@ -1093,7 +1155,7 @@ function BriefPanel({ data, state, go }) {
   };
   if (!brief || phase === "writing") {
     return html`<div class="ai-banner">
-      <${Icon} name="spark" size=${18} />
+      <${Icon} name="spark" size=${20} />
       <div><b>${soleDept(data) ? t(`需要一份${soleDept(data)}的預算簡報？`, `Need a budget brief for ${dn(soleDept(data))}?`) : state.role === "cfo" ? t("需要一份全公司預警簡報？", "Need a company-wide alert brief?") : t("需要一份提報管理層的預警簡報？", "Need an alert brief for management?")}</b><span>${phase === "writing" ? t("AI 撰寫中，約需 10–20 秒…", "AI is writing; this takes about 10–20 seconds…")
         : phase === "error" ? t("簡報沒有產生成功，請再試一次。", "The brief could not be written; please try again.")
         : t("AI 依下方預警與判斷依據撰寫摘要與建議行動，數字自動查核，可直接下載 PDF。", "AI drafts a summary and actions from the alerts below; every number is checked, and you can download it as a PDF.")}</span></div>
@@ -1130,21 +1192,24 @@ function AlertsTab({ data, state, openDept, go }) {
     </div>`)}</section>
     <${BriefPanel} key=${`${data.year}|${state.ds}|${state.role}|${state.roleDept}|${(state.th || DEFAULT_TH).join()}|${state.depts.join()}`} data=${data} state=${state} go=${go} />
     ${alerts.length ? alerts.map((d) => html`<article class=${"card acard " + d.statusKey}>
+      <div class="acard-main">
       <div class="acard-head">
         <span class=${"tag " + d.statusKey}>${sl(d.statusKey)}</span><h3>${dn(d.name)}</h3>
         <span class=${"acard-amt num c-" + d.statusKey}>${fmc(d.variance, true)}</span>
       </div>
       <p class="acard-msg">${t("年底預估", "Year-end forecast")} <b class="num">${fmc(d.forecast)}</b>${t("，年度預算", " vs budget")} <span class="num">${fmc(d.budget)}</span> (<span class="num">${pct(d.variancePct, true)}</span>) · ${t("合理區間", "likely range")} <span class="num">${fmc(d.low)} – ${fmc(d.high)}</span></p>
-      <div class="section-title" style="margin:12px 0 4px">${t("為什麼亮燈", "Why it is flagged")}</div>
+      <div class="section-title spaced">${t("為什麼亮燈", "Why it is flagged")}</div>
       <ul class="evidence">${d.evidence.map((e) => html`<li>${e}</li>`)}</ul>
-      <div class="acard-foot">
+      </div>
+      <aside class="acard-side">
+        <div class="section-title">${t("建議行動", "Suggested action")}</div>
         <div class="next"><${Icon} name="arrow" size=${14} />${t(...NEXT_ACTION[d.statusKey])}</div>
         <div class="acard-btns">
           <button type="button" class="ghost-btn" onClick=${() => openDept(d.id)}>${t("查看明細", "Details")}</button>
           <button type="button" class="ghost-btn" onClick=${() => go("/assistant", t(`分析${d.name}今年的預算執行狀況，和往年相比有什麼差異？建議怎麼處理？`, `Analyse ${dn(d.name)}'s budget this year: how does it differ from past years, and what should we do?`))}><${Icon} name="spark" size=${14} />${t("請 AI 分析", "Ask AI")}</button>
         </div>
-      </div>
-    </article>`) : html`<div class="alert ok"><div class="lead"><${Icon} name="check" size=${18} /><b>${t("目前沒有符合預警條件的部門", "No department currently meets the alert criteria")}</b></div></div>`}`;
+      </aside>
+    </article>`) : html`<div class="alert ok"><div class="lead"><${Icon} name="check" size=${20} /><b>${t("目前沒有符合預警條件的部門", "No department currently meets the alert criteria")}</b></div></div>`}`;
 }
 
 function replayDeptOption(row, th) {
@@ -1162,10 +1227,10 @@ function replayDeptOption(row, th) {
   o.series = [
     { name: t("傳統月報：累計實際 ÷ 累計預算", "Month-end report: actual ÷ budget to date"), type: "line", data: [...row.months.map((m) => m.ytd), null], symbolSize: 6,
       lineStyle: { color: css("--muted"), width: 2, type: [5, 4] }, itemStyle: { color: css("--muted") },
-      markArea: { silent: true, label: { show: false }, itemStyle: { color: css("--ok-soft"), opacity: .6 }, data: [[{ yAxis: th.lag }, { yAxis: th.watch }]] },
+      markArea: { silent: true, label: { show: true, position: "insideTopLeft", formatter: t("正常範圍", "Normal range"), color: css("--muted"), fontSize: 11 }, itemStyle: { color: css("--ok-soft"), opacity: .6 }, data: [[{ yAxis: th.lag }, { yAxis: th.watch }]] },
       markLine: { silent: true, symbol: "none", label: { show: false }, lineStyle: { color: css("--border-strong"), type: [2, 3] }, data: [{ yAxis: 100 }] } },
     { name: t("本系統：預測年底使用率", "This system: forecast year-end use"), type: "line", data: [...row.months.map((m) => ({ value: m.use, itemStyle: { color: css(tone[m.key]) } })), null],
-      symbolSize: 9, lineStyle: { color: css("--accent"), width: 3 }, itemStyle: { color: css("--accent"), borderColor: css("--surface"), borderWidth: 1.5 },
+      symbolSize: 8, lineStyle: { color: css("--accent"), width: 3 }, itemStyle: { color: css("--accent"), borderColor: css("--surface"), borderWidth: 1.5 },
       markLine: flags.length ? { silent: true, symbol: "none", data: flags.map((f) => ({ xAxis: f.m - 1, lineStyle: { color: f.c, type: [3, 3], width: 1.5 },
         label: { formatter: `${f.label} · ${mon(f.m)}`, color: f.c, fontSize: 11, position: "insideEndTop" } })) } : undefined },
     { name: t("年底實際", "Actual year end"), type: "scatter", symbol: "path://M12 2l3 7h7l-5.5 4.5L18.5 21 12 16.5 5.5 21l2-7.5L2 9h7z", symbolSize: 18,
@@ -1235,8 +1300,8 @@ function ReplayTab({ state, theme }) {
         <div class="kpi-sub">${t("比 12 月結算更早亮燈，且亮起後不再改變", "before the December close, and the light stayed on")}</div></div>
     </section>
     <section class="card">
-      <div class="card-pad" style="padding-bottom:8px">
-        <div class="card-head" style="margin-bottom:8px"><h2 class="card-title">${t(`FY${year}：本系統 vs 傳統月報，每個月底亮的燈`, `FY${year}: this system vs the month-end report, light at each month-end`)}</h2>
+      <div class="card-pad table-head">
+        <div class="card-head"><h2 class="card-title">${t(`FY${year}：本系統 vs 傳統月報，每個月底亮的燈`, `FY${year}: this system vs the month-end report, light at each month-end`)}</h2>
           <${Info}><p>${t("× 代表燈號方向和最右欄的年底結果相反；滑鼠移到格子上可看當月百分比。", "× means the light pointed the opposite way to the year-end result on the right; hover a cell for that month's percentage.")}</p></${Info}>
           <span class="card-sub">${t(html`亮錯燈：本系統 <b class="num">${yearData.systemFalse}</b> 次、傳統月報 <b class="num">${yearData.reportFalse}</b> 次`, html`Wrong lights: this system <b class="num">${yearData.systemFalse}</b>, month-end report <b class="num">${yearData.reportFalse}</b>`)}</span>
           <div class="seg right" role="group" aria-label=${t("回放年度", "Replay year")}>${rp.years.map((y) => html`<button type="button" aria-pressed=${y === year} onClick=${() => { setYear(y); setDeptId(null); }}>FY${y}</button>`)}</div></div>
@@ -1261,7 +1326,7 @@ function ReplayTab({ state, theme }) {
     </section>
     ${row ? html`<section class="card card-pad">
       <div class="card-head"><h2 class="card-title">${t(`${row.name}：本系統 vs 傳統月報，逐月對照`, `${dn(row.name)}: this system vs the month-end report, month by month`)}</h2></div>
-      <div class="prompts" style="margin-bottom:8px">${focus.map((r) => html`<button type="button" class=${"prompt" + (r.id === row.id ? " on" : "")} aria-pressed=${r.id === row.id} onClick=${() => setDeptId(r.id)}>${dn(r.name)}</button>`)}</div>
+      <div class="prompts spaced-below">${focus.map((r) => html`<button type="button" class=${"prompt" + (r.id === row.id ? " on" : "")} aria-pressed=${r.id === row.id} onClick=${() => setDeptId(r.id)}>${dn(r.name)}</button>`)}</div>
       <${EChart} option=${opt} label=${t(row.name + "逐月燈號對照", `${dn(row.name)} lights by month`)} />
       <p class="verdict">${replayVerdict(row)}</p>
     </section>` : null}`;
@@ -1294,7 +1359,7 @@ function costDrillOption(kind, c, colors) {
     const o = hbarBase(rows.map((r) => r.label));
     o.legend = { type: "scroll", top: 0, left: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: css("--text-2"), fontSize: 12 }, data: depts.map(dn) };
     o.grid.top = 34;
-    o.series = depts.map((d) => ({ name: dn(d), type: "bar", stack: "a", barMaxWidth: 18, itemStyle: { color: colors[d] }, data: rows.map((r) => r.byDept[d] || 0) }));
+    o.series = depts.map((d) => ({ name: dn(d), type: "bar", stack: "a", barMaxWidth: 16, itemStyle: { color: colors[d] }, data: rows.map((r) => r.byDept[d] || 0) }));
     // 長度為 0 的最後一段只用來把合計標在整條長條的尾端
     o.series.push({ name: "__total", type: "bar", stack: "a", silent: true, data: rows.map(() => 0),
       label: endLabel((p) => `${fmc(rows[p.dataIndex].total)} · ${share(rows[p.dataIndex].total, c.total)}`) });
@@ -1305,7 +1370,7 @@ function costDrillOption(kind, c, colors) {
     };
     return o;
   }
-  const item = (v, color, extra = {}) => ({ value: v, itemStyle: { color, borderRadius: [0, 3, 3, 0], ...extra } });
+  const item = (v, color, extra = {}) => ({ value: v, itemStyle: { color, borderRadius: [0, 4, 4, 0], ...extra } });
   let rows, data, label, tip;
   if (kind === "project") {
     rows = c.projects;
@@ -1326,7 +1391,7 @@ function costDrillOption(kind, c, colors) {
     tip = (r) => `<b>${r.label}</b><br>${dn(r.dept)} · ${fmc(r.amount)} · ${t("占部門支出", "of department spend")} ${pct(r.share, false, 0)}`;
   }
   const o = hbarBase(rows.map((r) => r.label));
-  o.series = [{ type: "bar", barMaxWidth: 18, data, label: endLabel(label) }];
+  o.series = [{ type: "bar", barMaxWidth: 16, data, label: endLabel(label) }];
   o.tooltip.formatter = (ps) => tip(rows[ps[0].dataIndex]);
   return o;
 }
@@ -1424,19 +1489,13 @@ function CostsTab({ data, state, theme, go }) {
         <${Info}><p>${t(`篩選條件：截至 ${c.cutoff} 月，比往年同期平均高至少 25%，且增加金額超過 ${fmc(c.drivers.floor)}。`, `Shown when, through ${mon(c.cutoff)}, a category is at least 25% and ${fmc(c.drivers.floor)} above its past-year same-period average.`)}</p><p>${t("往年同期＝過去每一年 1 月到同一個月的合計，再取平均。", "Past-year average = each prior year's total for the same months, averaged.")}</p></${Info}></div>
       ${!c.drivers.hasHistory ? html`<div class="callout warn"><${Icon} name="alert" size=${16} />${t("所選年度沒有可比較的往年資料。", "No prior-year data is available for comparison.")}</div>`
         : flagged.length ? html`<div class="driver-grid">${flagged.slice(0, 3).map((r) => {
-          const scale = Math.max(r.amount, r.hist) || 1;
           return html`<div class="driver">
             <div class="who">${dn(r.dept)} · ${r.account}</div>
             <div class="big num c-watch">+${pct(r.pct, false, 0)}</div>
             <div class="sub">${t("本期", "Current")} <b class="num">${fmc(r.amount)}</b> · ${t("往年同期", "Past years")} <span class="num">${fmc(r.hist)}</span></div>
-            <div class="cmp">
-              <div><i style=${{ width: (r.amount / scale) * 100 + "%", background: "var(--watch)" }}></i></div>
-              <div><i style=${{ width: (r.hist / scale) * 100 + "%", background: "var(--border-strong)" }}></i></div>
-            </div>
-            <div class="sub" style="margin-top:8px">${t("請核對合約、採購單與專案需求。", "Check contracts, POs and project needs.")}</div>
           </div>`;
         })}</div>
-        ${flagged.length > 3 ? html`<p class="hint">${t(`另有 ${flagged.length - 3} 項符合規則：`, `${flagged.length - 3} more meet the rule: `)}${list(flagged.slice(3).map((r) => `${dn(r.dept)} ${r.account} +${Math.round(r.pct)}%`))}</p>` : null}`
+        <p class="hint">${t("以上項目請核對合約、採購單與專案需求。", "Check contracts, POs and project needs for the items above.")}${flagged.length > 3 ? html` ${t(`另有 ${flagged.length - 3} 項符合規則：`, `${flagged.length - 3} more meet the rule: `)}${list(flagged.slice(3).map((r) => `${dn(r.dept)} ${r.account} +${Math.round(r.pct)}%`))}` : null}</p>`
         : html`<div class="callout ok"><${Icon} name="check" size=${16} />${t("目前沒有符合篩選規則的高成本驅動項目。", "No cost driver currently meets the screening rule.")}</div>`}
       ${c.drivers.hasHistory ? html`<details class="more"><summary>${t(`查看全部 ${c.drivers.rows.length} 個科目比較`, `View all ${c.drivers.rows.length} category comparisons`)}</summary>
         <div class="table-wrap"><table class="static">
@@ -1458,48 +1517,49 @@ function CostsTab({ data, state, theme, go }) {
       ${drill === "project" && !c.projects.length ? html`<div class="callout ok"><${Icon} name="check" size=${16} />${t("今年目前沒有專案支出；支出 100% 為日常營運。", "No project spending this year; 100% is routine operations.")}</div>`
         : html`<${EChart} key=${drill} option=${drillOpt} height=${drillHeight} label=${t("費用分布", "Spending breakdown")} />`}
     </section>
-    <section class="duo">
+    <section class="stack">
       <div class="card">
-        <div class="card-pad" style="padding-bottom:12px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("已標記事件", "Tagged events")}</h2>
+        <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("已標記事件", "Tagged events")}</h2>
           <span class="card-sub">${t("一次性支出只計已發生金額，不延伸到未來月份", "One-off amounts stay in actuals and are not extrapolated")}</span></div></div>
         ${c.events.length ? html`<div class="table-wrap"><table class="static">
-          <thead><tr><th>${t("部門", "Department")}</th><th>${t("事件", "Event")}</th><th>${t("月份", "Months")}</th><th class="r">${t("一次性金額", "One-off")}</th></tr></thead>
+          <thead><tr><th>${t("部門", "Department")}</th><th>${t("事件", "Event")}</th><th>${t("類型", "Type")}</th><th>${t("月份", "Months")}</th><th class="r">${t("一次性金額", "One-off")}</th></tr></thead>
           <tbody>${c.events.map((e) => html`<tr>
             <td><div class="dept-cell">${dn(e.dept)}</div></td>
-            <td>${e.event}</td><td class="num">${e.from === e.to ? mon(e.from) : `${mon(e.from)}–${mon(e.to)}`}</td>
-            <td class="r num">${e.oneOff ? fmc(e.oneOff) : html`<span class="tag plain">${t("經常性", "Recurring")}</span>`}</td>
+            <td>${e.event}</td><td><span class="tag plain">${e.oneOff ? t("一次性", "One-off") : t("經常性", "Recurring")}</span></td>
+            <td class="num">${e.from === e.to ? mon(e.from) : `${mon(e.from)}–${mon(e.to)}`}</td>
+            <td class="r num">${e.oneOff ? fmc(e.oneOff) : html`<span class="text-muted">—</span>`}</td>
           </tr>`)}</tbody>
-        </table></div>` : html`<p class="hint" style="padding:0 20px 20px">${t("所選年度沒有標記事件。", "No events are tagged for this year.")}</p>`}
+        </table></div>` : html`<p class="hint card-foot">${t("所選年度沒有標記事件。", "No events are tagged for this year.")}</p>`}
       </div>
       <div class="card">
-        <div class="card-pad" style="padding-bottom:12px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("可能重複的費用明細", "Possible duplicate expense lines")}</h2>
-          <${Info}><p>${t("比對同月份、部門、科目、供應商與憑證號碼都相同的明細。結果僅供人工覆核，不取代正式稽核。", "Flags lines that share month, department, category, vendor and voucher number. For human review only; not a substitute for an audit.")}</p></${Info}></div></div>
+        <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("可能重複的費用明細", "Possible duplicate expense lines")}</h2>
+          <${Info}><p>${t("比對同月份、部門、科目、供應商與憑證號碼都相同的明細。結果僅供人工覆核，不取代正式稽核。", "Flags lines that share month, department, category, vendor and voucher number. For human review only; not a substitute for an audit.")}</p></${Info}>
+          ${c.duplicates.length ? html`<span class="card-sub c-watch">${t(`${c.duplicates.length} 筆憑證號碼相同，合計 ${fmc(dupTotal)}，請人工覆核`, `${c.duplicates.length} lines share a voucher number (${fmc(dupTotal)}); please review`)}</span>` : null}</div></div>
         ${c.duplicates.length ? html`
-          <div class="callout warn" style="margin:0 20px 12px"><${Icon} name="copy" size=${16} />${t(`找到 ${c.duplicates.length} 筆憑證號碼相同的明細，合計 ${fmc(dupTotal)}，請人工覆核。`, `${c.duplicates.length} lines share a voucher number, totalling ${fmc(dupTotal)}. Please review.`)}</div>
           <div class="table-wrap"><table class="static">
             <thead><tr><th>${t("憑證號碼", "Voucher")}</th><th>${t("部門", "Department")}</th><th>${t("供應商", "Vendor")}</th><th>${t("採購單號", "PO")}</th><th class="r">${t("金額（元）", "Amount (NT$)")}</th></tr></thead>
             <tbody>${c.duplicates.map((l) => html`<tr><td class="num">${l.id}</td><td>${dn(l.dept)}</td><td>${l.vendor}</td><td class="num">${l.po}</td><td class="r num">${yuan(l.amount)}</td></tr>`)}</tbody>
           </table></div>`
-          : html`<div class="callout ok" style="margin:0 20px 20px"><${Icon} name="check" size=${16} />${t("未找到符合重複條件的明細。", "No lines matched the duplicate screening rule.")}</div>`}
+          : html`<div class="callout ok card-foot"><${Icon} name="check" size=${16} />${t("未找到符合重複條件的明細。", "No lines matched the duplicate screening rule.")}</div>`}
       </div>
     </section>
     <section class="card">
-      <div class="card-pad" style="padding-bottom:12px">
+      <div class="card-pad table-head">
         <div class="card-head"><h2 class="card-title">${t("費用明細帳", "Expense ledger")}</h2>
           <${Info}><p>${t("經辦人欄位僅供內控與稽核追蹤，不作為個人績效評比。", "The handler field is for internal-control traceability only, not performance review.")}${state.role === "fpa" ? t("財務分析師身分看到的姓名已遮罩。", " Names are masked for the FP&A role.") : ""}</p></${Info}>
           <span class="card-sub">${t(`逐筆發票層級 · 單筆 ${fmc(c.approvalLimit)} 以上需財務長核准`, `Invoice level · lines of ${fmc(c.approvalLimit)} or more need CFO approval`)}</span></div>
         <div class="ledger-tools">
-          ${multi ? html`<select aria-label=${t("部門", "Department")} value=${fDept} onChange=${(e) => setFDept(e.target.value)}>
-            <option value="">${t("全部部門", "All departments")}</option>${data.departments.map((d) => html`<option value=${d.name}>${dn(d.name)}</option>`)}</select>` : null}
-          <select aria-label=${t("會計科目", "Category")} value=${fAcct} onChange=${(e) => setFAcct(e.target.value)}>
-            <option value="">${t("全部科目", "All categories")}</option>${accounts.map(([gl, name]) => html`<option value=${gl}>${gl} ${name}</option>`)}</select>
+          ${multi ? html`<${Select} label=${t("部門", "Department")} value=${fDept} onChange=${setFDept}
+            options=${[{ value: "", label: t("全部部門", "All departments") }, ...data.departments.map((d) => ({ value: d.name, label: dn(d.name) }))]} />` : null}
+          <${Select} label=${t("會計科目", "Category")} value=${fAcct} onChange=${setFAcct}
+            options=${[{ value: "", label: t("全部科目", "All categories") }, ...accounts.map(([gl, name]) => ({ value: gl, label: `${gl} ${name}` }))]} />
           <input type="search" placeholder=${t("搜尋憑證、採購單、供應商、摘要或專案", "Search voucher, PO, vendor, description or project")} value=${query} onInput=${(e) => setQuery(e.target.value)} />
           <label><input type="checkbox" checked=${cfoOnly} onChange=${(e) => setCfoOnly(e.target.checked)} />${t("只看需財務長核准", "CFO-approval lines only")}</label>
           <button type="button" class=${"ghost-btn export-btn" + (xlsx === "error" ? " err" : "")} disabled=${xlsx === "busy" || !lines.length} onClick=${exportXlsx}
             title=${t("依目前篩選條件匯出 Excel（含匯出說明頁）", "Export the filtered lines to Excel (with an About sheet)")}>
             <${Icon} name=${xlsx === "error" ? "alert" : "download"} size=${14} />${xlsx === "busy" ? t("匯出中…", "Exporting…") : xlsx === "error" ? t("匯出失敗，請再試一次", "Export failed, try again") : t(`匯出 Excel（${lines.length.toLocaleString("en-US")} 筆）`, `Export Excel (${lines.length.toLocaleString("en-US")})`)}</button>
         </div>
-        <p class="hint" style="margin:0">${t(`共 ${lines.length.toLocaleString("en-US")} 筆，合計 ${fmc(lineTotal)}`, `${lines.length.toLocaleString("en-US")} lines totalling ${fmc(lineTotal)}`)}${lines.length ? t("，由新到舊排列。", ", newest first.") : t("。", ".")}</p>
+        <p class="hint">${t(`共 ${lines.length.toLocaleString("en-US")} 筆，合計 ${fmc(lineTotal)}`, `${lines.length.toLocaleString("en-US")} lines totalling ${fmc(lineTotal)}`)}${lines.length ? t("，由新到舊排列。", ", newest first.") : t("。", ".")}</p>
       </div>
       ${lines.length ? html`<div class="table-wrap"><table class="static ledger">
         <thead><tr><th>${t("日期", "Date")}</th><th>${t("憑證號碼", "Voucher")}</th>${multi ? html`<th>${t("部門", "Department")}</th>` : null}<th>${t("成本中心", "Cost centre")}</th><th>${t("科目", "GL account")}</th>
@@ -1511,7 +1571,7 @@ function CostsTab({ data, state, theme, go }) {
         </tr>`)}</tbody>
       </table></div>
       ${lines.length > shown ? html`<div class="ledger-more"><button type="button" class="ghost-btn" onClick=${() => setShown(shown + LEDGER_PAGE)}>${t(`再顯示 ${Math.min(LEDGER_PAGE, lines.length - shown)} 筆（已顯示 ${shown} / ${lines.length}）`, `Show ${Math.min(LEDGER_PAGE, lines.length - shown)} more (${shown} of ${lines.length})`)}</button></div>` : null}`
-        : html`<p class="hint" style="padding:0 20px 20px">${t("沒有符合條件的明細。", "No lines match these filters.")}</p>`}
+        : html`<p class="hint card-foot">${t("沒有符合條件的明細。", "No lines match these filters.")}</p>`}
     </section>`;
 }
 
@@ -1594,8 +1654,8 @@ function scenarioOption(rows) {
   o.xAxis = { type: "value", splitLine: { lineStyle: { color: css("--divider") } }, ...moneyScale(sorted.flatMap((r) => [r.variance, r.sVariance])), axisLabel: { color: css("--muted"), formatter: moneyAxis, hideOverlap: true } };
   o.yAxis = { type: "category", data: sorted.map((r) => dn(r.name)), axisTick: { show: false }, axisLine: { lineStyle: { color: css("--text") } }, axisLabel: { color: css("--text-2") } };
   o.series = [
-    { name: t("目前預測", "Current forecast"), type: "bar", barMaxWidth: 12, barGap: "15%", data: sorted.map((r) => r.variance), itemStyle: { color: css("--border-strong"), borderRadius: 3 } },
-    { name: t("情境假設下", "Under scenario"), type: "bar", barMaxWidth: 12, data: sorted.map((r) => ({ value: Math.round(r.sVariance), itemStyle: { color: css(tone[r.sKey]), borderRadius: 3 } })),
+    { name: t("目前預測", "Current forecast"), type: "bar", barMaxWidth: 12, barGap: "15%", data: sorted.map((r) => r.variance), itemStyle: { color: css("--series-muted"), borderRadius: 4 } },
+    { name: t("情境假設下", "Under scenario"), type: "bar", barMaxWidth: 12, data: sorted.map((r) => ({ value: Math.round(r.sVariance), itemStyle: { color: css(tone[r.sKey]), borderRadius: 4 } })),
       label: { show: true, position: "right", formatter: (p) => fmc(p.value, true), color: css("--text-2"), fontSize: 11 } },
   ];
   return o;
@@ -1646,7 +1706,7 @@ function TransferDraft({ tr, s, year, depts, ds, close }) {
     <p class="hint">${t("此文件僅為申請草稿：下載 PDF 不會變更任何預算，也不會送出簽核。", "Draft only: downloading the PDF does not change any budget or submit an approval.")}</p>
     <div class="doc-actions">
       <button type="button" class=${"btn-primary" + (pdf === "error" ? " err" : "")} disabled=${pdf === "busy"} onClick=${download}>
-        <${Icon} name=${pdf === "error" ? "alert" : "download"} size=${15} />${pdf === "busy" ? t("產生中…", "Preparing…") : pdf === "error" ? t("下載失敗，請再試一次", "Download failed, try again") : t("下載申請單 PDF", "Download request PDF")}</button>
+        <${Icon} name=${pdf === "error" ? "alert" : "download"} size=${16} />${pdf === "busy" ? t("產生中…", "Preparing…") : pdf === "error" ? t("下載失敗，請再試一次", "Download failed, try again") : t("下載申請單 PDF", "Download request PDF")}</button>
       <button type="button" class="ghost-btn" onClick=${() => window.print()}>${t("列印", "Print")}</button>
       <button type="button" class="ghost-btn" onClick=${close}>${t("關閉", "Close")}</button>
     </div>
@@ -1697,7 +1757,7 @@ function ScenarioTab({ data, meta, theme, setYear }) {
       <div class="kpi"><div class="kpi-label">${t("套用情境後：超支部門", "With scenario: departments over")}</div><div class="kpi-value num">${overN}<small> / ${rows.length}</small></div>
         <div class="kpi-sub">${t(`原本 ${baseN} 個`, `before: ${baseN}`)}${overN !== baseN ? html` · <span class=${overN > baseN ? "up-bad" : "up-good"}>${overN > baseN ? "+" : ""}${overN - baseN}${t(" 個", "")}</span>` : ""}</div></div>
     </section>
-    ${!active ? html`<p class="hint" style="margin:-8px 0 0">${t("目前三個假設都是 0%，所以「套用情境後」與原本相同；拖動滑桿或點上方的情境即可看到影響。", "All three assumptions are 0%, so the scenario equals the current forecast; move a slider or pick a scenario above to see the impact.")}</p>` : null}
+    ${!active ? html`<p class="hint">${t("目前三個假設都是 0%，所以「套用情境後」與原本相同；拖動滑桿或點上方的情境即可看到影響。", "All three assumptions are 0%, so the scenario equals the current forecast; move a slider or pick a scenario above to see the impact.")}</p>` : null}
     <section class="duo">
       <div class="card card-pad">
         <div class="card-head"><h2 class="card-title">${t("情境假設下，各部門年底會超支還是有結餘？", "Under this scenario, which departments end over or under budget?")}</h2>
@@ -1715,19 +1775,19 @@ function ScenarioTab({ data, meta, theme, setYear }) {
           </div>`)}</div>
           ${uncovered > 0 ? html`<div class="callout warn"><${Icon} name="alert" size=${16} /><span>${t(html`內部結餘不足以完全支應，仍有 <b class="num">${fmc(uncovered)}</b> 缺口需追加預算或縮減支出。`, html`Internal headroom cannot cover everything; <b class="num">${fmc(uncovered)}</b> still needs extra budget or spending cuts.`)}</span></div>`
             : html`<div class="callout ok"><${Icon} name="check" size=${16} /><span>${t("內部結餘足以支應所有預估缺口。", "Internal headroom covers every projected shortfall.")}</span></div>`}`
-        : html`<div class="empty" style="padding:40px 12px"><p>${t("依目前情境，沒有可配對的預算結餘與預測缺口。", "This scenario has no headroom that can be paired with a shortfall.")}</p></div>`}
+        : html`<div class="empty in-card"><p>${t("依目前情境，沒有可配對的預算結餘與預測缺口。", "This scenario has no headroom that can be paired with a shortfall.")}</p></div>`}
       </div>
     </section>
     ${draft != null && out[draft] ? html`<${TransferDraft} key=${draft} tr=${out[draft]} s=${s} year=${data.year} depts=${meta.departments.map((d) => d.id)} ds=${meta.dataset.id} close=${() => setDraft(null)} />` : null}
     <section class="card">
-      <div class="card-pad" style="padding-bottom:12px"><div class="card-head" style="margin:0"><h2 class="card-title">${t("情境明細", "Scenario detail")}</h2><span class="card-sub">${unit()}</span></div></div>
+      <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("情境明細", "Scenario detail")}</h2><span class="card-sub">${unit()}</span></div></div>
       <div class="table-wrap"><table>
         <thead><tr><th>${t("部門", "Department")}</th><th>${t("情境燈號", "Scenario status")}</th><th class="r">${t("年度預算", "Budget")}</th><th class="r">${t("目前預測", "Current")}</th><th class="r">${t("情境預測", "Scenario")}</th><th class="r">${t("情境差異", "Scenario gap")}</th><th class="r">${t("情境影響", "Impact")}</th></tr></thead>
         <tbody>${[...rows].sort((a, b) => b.sVariance - a.sVariance).map((r) => html`<tr style="cursor:default">
           <td><div class="dept-cell">${dn(r.name)}</div></td>
           <td><span class=${"tag " + r.sKey}>${sl(r.sKey)}</span>${r.sKey !== r.statusKey ? html` <span class="card-sub">${t(`原本${r.status}`, `was ${sl(r.statusKey).toLowerCase()}`)}</span>` : null}</td>
           <td class="r num">${wan(r.budget)}</td><td class="r num">${wan(r.forecast)}</td><td class="r num"><b>${wan(r.sForecast)}</b></td>
-          <td class=${"r num c-" + r.sKey}>${wan(r.sVariance, true)}</td><td class="r num">${wan(r.sForecast - r.forecast, true)}</td>
+          <td class=${"r num c-" + r.sKey}>${wan(r.sVariance, true)}</td><td class="r num">${Math.abs(r.sForecast - r.forecast) < 0.5 ? html`<span class="text-muted">—</span>` : wan(r.sForecast - r.forecast, true)}</td>
         </tr>`)}</tbody>
       </table></div>
     </section>`;
@@ -1743,8 +1803,8 @@ function backtestOption(b) {
   o.yAxis = { type: "category", data: rows.map((r) => dn(r.name)), axisTick: { show: false }, axisLine: { lineStyle: { color: css("--border") } }, axisLabel: { color: css("--text-2") } };
   const lbl = (c) => ({ show: true, position: "right", formatter: "{c}%", color: css(c), fontSize: 11 });
   o.series = [
-    { name: t("對照：照目前速度推估", "Benchmark: current pace"), type: "bar", barMaxWidth: 12, barGap: "15%", data: rows.map((r) => r.bench), itemStyle: { color: css("--border-strong"), borderRadius: 3 }, label: lbl("--muted") },
-    { name: t("本系統預測", "This system"), type: "bar", barMaxWidth: 12, data: rows.map((r) => r.model), itemStyle: { color: css("--ok"), borderRadius: 3 }, label: lbl("--text") },
+    { name: t("對照：照目前速度推估", "Benchmark: current pace"), type: "bar", barMaxWidth: 12, barGap: "15%", data: rows.map((r) => r.bench), itemStyle: { color: css("--series-muted"), borderRadius: 4 }, label: lbl("--muted") },
+    { name: t("本系統預測", "This system"), type: "bar", barMaxWidth: 12, data: rows.map((r) => r.model), itemStyle: { color: css("--accent"), borderRadius: 4 }, label: lbl("--text") },
   ];
   return o;
 }
@@ -1774,7 +1834,7 @@ function BacktestTab({ data, state, theme }) {
           <li>${t("和那一年真正花掉的金額比對：誤差越小，今年的預測越值得信任。", "Compare with what was actually spent that year: the smaller the error, the more this year's forecast can be trusted.")}</li>
         </ol></${Info}>
         <span class="card-sub">${t("用過去年度回頭驗證", "Checked against past years")}</span></div>
-      <div class="slider" style="max-width:520px">
+      <div class="slider">
         <div class="slider-top"><label for="bt-month">${t("模擬預測截止月份", "Simulated forecast month")}</label><b class="num">${t(`${month} 月底`, `End of ${mon(month)}`)}</b></div>
         <input id="bt-month" type="range" min="2" max="11" step="1" value=${month} style=${{ "--p": ((month - 2) / 9) * 100 + "%" }} onInput=${(e) => setMonth(Number(e.target.value))} />
         <div class="slider-range num"><span>${mon(2)}</span><span>${t("越晚預測，已知資料越多", "Later = more data known")}</span><span>${mon(11)}</span></div>
@@ -1812,9 +1872,9 @@ function BacktestTab({ data, state, theme }) {
         <${Info}><p>${t("匯入 CSV 時會先檢核欄位、月份完整性與數值，可直接使用 ERP／財務系統的匯出檔。", "Imported CSVs are checked for columns, month completeness and values, so ERP or finance-system exports work directly.")}</p></${Info}>${q ? html`<span class="card-sub">${t(`${q.checks.filter((c) => c.ok).length} / ${q.checks.length} 項通過`, `${q.checks.filter((c) => c.ok).length} / ${q.checks.length} passed`)}</span>` : null}</div>
       ${q ? html`<ul class="checks">${q.checks.map((c) => html`<li>
           <span class=${"chk " + (c.ok ? "ok" : "warn")}><${Icon} name=${c.ok ? "check" : "alert"} size=${14} sw=${2.6} /></span>
-          <span class="chk-label">${c.label}</span><span class="chk-detail">${c.detail}</span><b class=${c.ok ? "c-ok-strong" : "c-watch"}>${c.ok ? t("通過", "Pass") : t("需檢查", "Review")}</b>
+          <div class="chk-body"><div class="chk-line"><span class="chk-label">${c.label}</span><span class=${"tag " + (c.ok ? "ok" : "watch")}>${c.ok ? t("通過", "Pass") : t("需檢查", "Review")}</span></div><span class="chk-detail">${c.detail}</span></div>
         </li>`)}
-        <li><span class="chk muted"><${Icon} name="building" size=${14} /></span><span class="chk-label">${t("資料來源", "Data source")}</span><span class="chk-detail">${q.source}</span><b></b></li></ul>`
+        <li><span class="chk muted"><${Icon} name="building" size=${14} /></span><div class="chk-body"><div class="chk-line"><span class="chk-label">${t("資料來源", "Data source")}</span></div><span class="chk-detail">${q.source}</span></div></li></ul>`
       : html`<div class="skeleton" style="height:200px"></div>`}
     </section>`;
 }
@@ -1893,7 +1953,7 @@ function forecastVarOption(data) {
   o.yAxis = { type: "category", data: rows.map((d) => dn(d.name)), axisTick: { show: false }, axisLine: { lineStyle: { color: css("--border") } }, axisLabel: { color: css("--text-2") } };
   o.series = [{
     type: "bar", barMaxWidth: 16,
-    data: rows.map((d) => ({ value: d.variance, itemStyle: { color: css(tone[d.statusKey]), borderRadius: d.variance > 0 ? [0, 3, 3, 0] : [3, 0, 0, 3] } })),
+    data: rows.map((d) => ({ value: d.variance, itemStyle: { color: css(tone[d.statusKey]), borderRadius: d.variance > 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] } })),
     label: { show: true, position: "right", formatter: (p) => fmc(p.value, true), color: css("--text-2"), fontSize: 11 },
   }];
   return o;
@@ -1926,13 +1986,14 @@ function CheckBadge({ check }) {
   const ok = check.exact + check.derived;
   if (!ok && !check.unmatched) return null;
   return html`<span class=${"check-badge " + (check.unmatched ? "warn" : "ok")} title=${t("回答中的每個金額與百分比，都會回頭比對系統資料", "Every amount and percentage in the answer is checked against the system data")}>
-    <${Icon} name="shield" size=${13} />${t(`數字查核：${ok} 個與資料一致`, `Number check: ${ok} match the data`)}${check.unmatched ? t(`，${check.unmatched} 個無法對應（已標示）`, `, ${check.unmatched} could not be traced (highlighted)`) : ""}
+    <${Icon} name="shield" size=${14} />${t(`數字查核：${ok} 個與資料一致`, `Number check: ${ok} match the data`)}${check.unmatched ? t(`，${check.unmatched} 個無法對應（已標示）`, `, ${check.unmatched} could not be traced (highlighted)`) : ""}
   </span>`;
 }
 
 function sourceText(m) {
   if (m.mode === "ai") return t(`由 ${m.source} 回答`, `Answered by ${m.source}`);
   if (m.mode === "fallback") return t("AI 服務暫時忙碌，改由系統直接回答", "AI service busy; answered directly by the system");
+  if (m.mode === "limited") return t("使用次數暫時達上限，改由系統直接回答，約一分鐘後可再用 AI", "Usage limit reached; answered by the system. AI is available again in about a minute");
   return t("內建規則回答", "Answered by built-in rules");
 }
 
@@ -1940,7 +2001,7 @@ function Message({ m, data, theme, retry }) {
   const [copied, setCopied] = useState(false);
   if (m.role === "user") return html`<div class="msg user"><div class="bubble">${m.content}</div></div>`;
   if (m.error) {
-    return html`<div class="msg bot"><div class="bot-mark"><${Icon} name="spark" size=${15} /></div><div class="bot-body">
+    return html`<div class="msg bot"><div class="bot-mark"><${Icon} name="spark" size=${16} /></div><div class="bot-body">
       <p class="err">${m.error}</p><button type="button" class="ghost-btn" onClick=${retry}>${t("重新送出", "Try again")}</button>
     </div></div>`;
   }
@@ -1950,14 +2011,14 @@ function Message({ m, data, theme, retry }) {
     } catch (e) {}
   };
   return html`<div class="msg bot">
-    <div class="bot-mark"><${Icon} name="spark" size=${15} /></div>
+    <div class="bot-mark"><${Icon} name="spark" size=${16} /></div>
     <div class="bot-body">
       <div class="md" dangerouslySetInnerHTML=${{ __html: md(m.content) }}></div>
       ${m.chart && data ? html`<${ChatChart} spec=${m.chart} data=${data} theme=${theme} />` : null}
       <div class="msg-meta">
         <${CheckBadge} check=${m.check} />
         <span class="src">${sourceText(m)}</span>
-        <button type="button" class="ghost-btn sm" onClick=${copy}><${Icon} name=${copied ? "check" : "copy"} size=${13} />${copied ? t("已複製", "Copied") : t("複製", "Copy")}</button>
+        <button type="button" class="ghost-btn sm" onClick=${copy}><${Icon} name=${copied ? "check" : "copy"} size=${14} />${copied ? t("已複製", "Copied") : t("複製", "Copy")}</button>
       </div>
     </div>
   </div>`;
@@ -2053,24 +2114,24 @@ function Assistant({ data, state, theme }) {
           <div class="card-sub">${scope} · ${data.cutoff < 12 ? t(`資料截至 ${data.year}/${String(data.cutoff).padStart(2, "0")}`, `data through ${mon(data.cutoff)} ${data.year}`) : t(`FY${data.year} 全年`, `FY${data.year} full year`)}</div>
         </div>
         ${status ? html`<span class=${"conn " + (status.online ? "on" : "off")}><i></i>${status.online ? t("AI 已連線", "AI online") : t("內建規則模式", "Built-in rules mode")}</span>` : null}
-        ${messages.length ? html`<button type="button" class="ghost-btn" style="margin-left:auto" onClick=${() => setMessages([])}><${Icon} name="trash" size=${14} />${t("清除對話", "Clear chat")}</button>` : null}
+        ${messages.length ? html`<button type="button" class="ghost-btn push-right" onClick=${() => setMessages([])}><${Icon} name="trash" size=${14} />${t("清除對話", "Clear chat")}</button>` : null}
       </div>
       <div class="chat-log" ref=${log} aria-live="polite">
         ${messages.length ? messages.map((m) => html`<${Message} m=${m} data=${data} theme=${theme} retry=${retry} />`) : html`<div class="chat-empty">
-          <div class="chat-empty-mark"><${Icon} name="spark" size=${22} /></div>
+          <div class="chat-empty-mark"><${Icon} name="spark" size=${24} /></div>
           <h3>${t("想知道預算的哪一件事？", "What would you like to know about the budget?")}</h3>
           <p>${t(`回答只使用 ${scope} 的系統資料；回答中的數字會自動查核。`, `Answers use only system data for ${scope}; every number in an answer is checked automatically.`)}</p>
           <div class="starter">${prompts.map((p) => html`<button type="button" onClick=${() => send(p.q, messages)}>
             <span class="starter-tag"><${Icon} name=${p.icon} size=${14} />${p.tag}</span>${p.q}
           </button>`)}</div>
         </div>`}
-        ${busy ? html`<div class="msg bot"><div class="bot-mark"><${Icon} name="spark" size=${15} /></div>
+        ${busy ? html`<div class="msg bot"><div class="bot-mark"><${Icon} name="spark" size=${16} /></div>
           <div class="bot-body typing"><span></span><span></span><span></span>${t(`正在分析 FY${data.year} 資料`, `Analysing FY${data.year} data`)}</div></div>` : null}
       </div>
       ${messages.length ? html`<div class="chips-row">${prompts.map((p) => html`<button type="button" class="prompt" disabled=${busy} onClick=${() => send(p.q, messages)}>${p.q}</button>`)}</div>` : null}
       <form class="composer" onSubmit=${(e) => { e.preventDefault(); send(input, messages); }}>
         <textarea ref=${box} rows="1" value=${input} onInput=${grow} onKeyDown=${onKey} placeholder=${t("輸入預算或部門相關問題，例如：行銷部第四季會超支嗎？", "Ask about the budget or a department, e.g. Will Marketing overspend in Q4?")} aria-label=${t("輸入問題", "Your question")}></textarea>
-        <button type="submit" class="send" disabled=${busy || !input.trim()} aria-label=${t("送出", "Send")}><${Icon} name="send" size=${18} sw=${2.2} /></button>
+        <button type="submit" class="send" disabled=${busy || !input.trim()} aria-label=${t("送出", "Send")}><${Icon} name="send" size=${20} sw=${2.2} /></button>
       </form>
       <div class="composer-note">${t("Enter 送出 · Shift + Enter 換行 · 示範資料為合成數據，AI 建議僅供參考，不代表已核准的調整", "Enter to send · Shift + Enter for a new line · Demo data is synthetic; AI suggestions are not approved changes")}</div>
     </section>
@@ -2146,7 +2207,7 @@ function DataImport({ meta, state, setDs, close }) {
     </div>
     <div class="drawer-body">
       ${phase === "done" ? html`<div class="import-ok">
-          <div class="chk ok big"><${Icon} name="check" size=${22} sw=${2.6} /></div>
+          <div class="chk ok big"><${Icon} name="check" size=${24} sw=${2.6} /></div>
           <h3>${t("檢核通過，可以開始使用", "Checks passed; ready to use")}</h3>
           <dl class="doc-fields">
             <dt>${t("檔案", "File")}</dt><dd>${result.name}</dd>
@@ -2161,7 +2222,7 @@ function DataImport({ meta, state, setDs, close }) {
         <div class=${"drop" + (drag ? " over" : "") + (phase === "uploading" ? " busy" : "")} role="button" tabindex="0"
           onClick=${() => phase !== "uploading" && input.current.click()} onKeyDown=${(e) => (e.key === "Enter" || e.key === " ") && input.current.click()}
           onDragOver=${(e) => { e.preventDefault(); setDrag(true); }} onDragLeave=${() => setDrag(false)} onDrop=${onDrop}>
-          <${Icon} name="upload" size=${26} />
+          <${Icon} name="upload" size=${24} />
           <b>${phase === "uploading" ? t("檢核中…", "Checking…") : t("把 CSV 拖到這裡，或點一下選擇檔案", "Drop a CSV here, or click to choose a file")}</b>
           <span>${t("UTF-8 或 Big5 編碼皆可 · 上限 3 MB · 欄位名稱中英文都可以", "UTF-8 or Big5 · up to 3 MB · English or Chinese column names")}</span>
           <input ref=${input} type="file" accept=".csv,text/csv" hidden onChange=${(e) => { upload(e.target.files[0]); e.target.value = ""; }} />
@@ -2408,3 +2469,8 @@ function App() {
 }
 
 render(html`<${App} />`, document.getElementById("app"));
+
+// 表格出現橫向捲軸時，捲軸取代底部 8px 留白，表格到卡片下緣的距離維持 20
+const markScroll = () => document.querySelectorAll(".table-wrap").forEach((w) => w.classList.toggle("scrolls", w.scrollWidth > w.clientWidth + 1));
+new MutationObserver(markScroll).observe(document.getElementById("app"), { childList: true, subtree: true });
+addEventListener("resize", markScroll);

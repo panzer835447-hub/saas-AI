@@ -7,6 +7,8 @@
 """
 import io
 import threading
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -193,6 +195,37 @@ def head_note(role, picked, lang):
             f"or the whole company, explain that it is outside their current access (not missing data), then answer about {own} instead.")
 
 
+# AI 用量保護：網站是公開網址，免費 AI 額度可能被少數人在短時間內用光，比賽當天就無法使用。
+# 每個來源 IP 每分鐘最多 6 次、每小時 40 次；全站每分鐘最多 30 次。超過時仍回覆（快取或內建規則），網站照常可用。
+AI_LIMITS = ((60, 6), (3600, 40))
+AI_GLOBAL_PER_MIN = 30
+_AI_HITS: dict[str, deque] = defaultdict(deque)
+_AI_ALL: deque = deque()
+_AI_LOCK = threading.Lock()
+
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")  # Render 在代理之後，真正的來源放在這裡
+    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+
+
+def ai_allowed(request: Request) -> bool:
+    now, ip = time.time(), client_ip(request)
+    with _AI_LOCK:
+        hits = _AI_HITS[ip]
+        while hits and now - hits[0] > AI_LIMITS[-1][0]:
+            hits.popleft()
+        while _AI_ALL and now - _AI_ALL[0] > 60:
+            _AI_ALL.popleft()
+        if len(_AI_ALL) >= AI_GLOBAL_PER_MIN or any(sum(1 for t in hits if now - t <= win) >= n for win, n in AI_LIMITS):
+            return False
+        hits.append(now)
+        _AI_ALL.append(now)
+        if len(_AI_HITS) > 5000:  # 記憶體上限
+            _AI_HITS.clear()
+        return True
+
+
 def chat_depts(req):
     present = set(core.dataset(req.ds).Department.unique())
     picked = scoped(req.depts, req.viewRole, req.viewDept)
@@ -201,13 +234,13 @@ def chat_depts(req):
 
 
 @app.post("/api/brief")
-def post_brief(req: BriefRequest):
+def post_brief(req: BriefRequest, request: Request):
     """AI 主管預警簡報：固定寫作格式，沿用對話的資料、數字查核與備援。"""
     check_year(req.year, req.ds)
     depts, note = chat_depts(req)
     prompt = [{"role": "user", "content": ai.brief_prompt(req.lang, depts[0] if len(depts) == 1 else None, req.viewRole)}]
     th = core.parse_th(req.th)
-    res = ai.chat(req.year, depts, prompt, req.ds, note, req.lang, th, req.fresh, brief=True)
+    res = ai.chat(req.year, depts, prompt, req.ds, note, req.lang, th, req.fresh, brief=True, limited=not ai_allowed(request))
     if res["mode"] != "ai":  # 對話用的內建規則回答不了簡報格式，改用固定格式的規則簡報
         res["text"] = report.rule_brief(req.year, depts, req.ds, req.lang, th)
     return res
@@ -257,12 +290,13 @@ def get_ai_status():
 
 
 @app.post("/api/chat")
-def post_chat(req: ChatRequest):
+def post_chat(req: ChatRequest, request: Request):
     check_year(req.year, req.ds)
     if req.messages[-1].role != "user" or not req.messages[-1].content.strip():
         raise HTTPException(422, "最後一則訊息必須是問題")
     depts, note = chat_depts(req)
-    return ai.chat(req.year, depts, [m.model_dump() for m in req.messages], req.ds, note, req.lang, core.parse_th(req.th))
+    return ai.chat(req.year, depts, [m.model_dump() for m in req.messages], req.ds, note, req.lang, core.parse_th(req.th),
+                   limited=not ai_allowed(request))
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

@@ -131,11 +131,12 @@ _CACHE = {}  # 相同問題、相同資料只消耗一次免費額度
 _COOLDOWNS = {}  # 剛遇到 429 的服務暫停 90 秒
 
 
-def llm_answer(messages, systems, fresh=False):
+def llm_answer(messages, systems, fresh=False, cache_only=False):
     """依序嘗試每個服務；回傳 (文字, 使用的服務名稱, 略過紀錄)。全部失敗時丟出 RuntimeError。
 
     systems = {"full": ..., "compact": ...}：Gemini 用完整資料，Groq / OpenRouter 免費額度每分鐘 token 較少，用精簡版。
-    fresh=True（使用者按「重新產生」）時略過快取，重新請模型撰寫。"""
+    fresh=True（使用者按「重新產生」）時略過快取，重新請模型撰寫。
+    cache_only=True（超過使用次數上限）時只回傳快取中的答案，不呼叫任何服務。"""
     notes = []
     payload = json.dumps(messages, ensure_ascii=False)
     for prov in ai_chain():
@@ -147,6 +148,8 @@ def llm_answer(messages, systems, fresh=False):
         hit = _CACHE.get(key)
         if hit and not fresh and time.time() - hit[1] < 12 * 3600:
             return hit[0], prov["name"], notes
+        if cache_only:
+            continue
         try:
             if prov["id"] == "gemini":
                 text = strip_think(gemini_chat(prov["key"], messages, system, prov["model"]))
@@ -631,7 +634,8 @@ def brief_prompt(lang="zh", single_dept=None, role="cfo"):
         "- No chart, no greeting or sign-off; only use figures from the data; keep the wording neutral (say \"defer\", not \"freeze\").")
 
 
-def chat(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT_TH, fresh=False, brief=False):
+def chat(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT_TH, fresh=False, brief=False, limited=False):
+    """limited=True：此來源已超過使用次數上限（見 server.ai_allowed），只用快取答案，否則改由內建規則回覆。"""
     question = messages[-1]["content"]
     conversation = [{"role": m["role"], "content": m["content"][:4000]} for m in messages[-12:]]
     while conversation and conversation[0]["role"] == "assistant":
@@ -647,7 +651,7 @@ def chat(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT
         systems = {"full": rules + json.dumps(facts, ensure_ascii=False),
                    "compact": rules + json.dumps(compact, ensure_ascii=False)}
         try:
-            reply, source, notes = llm_answer(conversation, systems, fresh)
+            reply, source, notes = llm_answer(conversation, systems, fresh and not limited, cache_only=limited)
             reply, chart, picked = parse_chart_tag(reply, depts)
             first = re.search(r"^## ", reply, re.M)
             if brief and first:  # 一般對話規則要求「先一句結論」，簡報從第一個段落標題開始，避免和重點摘要重複
@@ -658,7 +662,9 @@ def chat(year, depts, messages, ds="", scope_note="", lang="zh", th=core.DEFAULT
             return {"text": mark_unmatched(reply, check), "source": source, "mode": "ai", "notes": notes, "chart": chart,
                     "check": {"exact": check["exact"], "derived": check["derived"], "unmatched": len(check["unmatched"])}}
         except RuntimeError as err:
-            return {"text": rule_reply(question, year, depts, ds, lang, th), "source": rules_label, "mode": "fallback",
-                    "notes": [str(err)], "chart": keyword_chart(question, depts), "check": None}
+            note = core.tx(lang, "使用次數暫時達到上限，這次改由內建規則回覆；約一分鐘後可再使用 AI。",
+                           "AI usage limit reached for now; this answer uses the built-in rules. Try AI again in about a minute.") if limited else str(err)
+            return {"text": rule_reply(question, year, depts, ds, lang, th), "source": rules_label, "mode": "limited" if limited else "fallback",
+                    "notes": [note], "chart": keyword_chart(question, depts), "check": None}
     return {"text": rule_reply(question, year, depts, ds, lang, th), "source": rules_label, "mode": "rules", "notes": [],
             "chart": keyword_chart(question, depts), "check": None}

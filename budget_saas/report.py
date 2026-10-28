@@ -18,9 +18,10 @@ from ai import MARK_CLOSE, MARK_OPEN
 # Noto Sans TC（SIL OFL）一般／粗體靜態檔，由可變字型預先轉出：
 # 在伺服器上即時轉換每次約 20 秒且很吃記憶體，免費主機撐不住，所以直接附上轉好的檔案
 FONTS = {"": Path(__file__).parent / "fonts" / "NotoSansTC-Regular.ttf", "B": Path(__file__).parent / "fonts" / "NotoSansTC-Bold.ttf"}
-INK, MUTED, LINE, SOFT = (17, 24, 39), (90, 98, 114), (226, 229, 235), (246, 247, 250)
-BRAND = (79, 70, 229)
-STATUS_RGB = {"high": (214, 51, 74), "watch": (183, 106, 0), "lag": (4, 121, 168), "ok": (17, 138, 88)}
+# 與網頁設計系統相同的色彩（styles.css 的淺色 token）；注意色在白紙上以文字出現，取深一階以維持 4.5:1
+INK, MUTED, LINE, SOFT = (17, 19, 24), (95, 101, 116), (228, 231, 236), (243, 244, 247)
+BRAND = (26, 86, 219)
+STATUS_RGB = {"high": (217, 45, 32), "watch": (168, 95, 0), "lag": (14, 124, 134), "ok": (95, 101, 116)}
 ACTIONS = {
     "high": ("檢視剩餘月份的採購、合約與支出計畫，必要時暫緩非必要支出。", "Review remaining-month purchases and contracts; defer discretionary spend if needed."),
     "watch": ("每月追蹤主要費用科目，確認超支是一次性還是持續性。", "Track major categories monthly and confirm whether the overrun is one-off or recurring."),
@@ -76,7 +77,7 @@ class BudgetPDF(FPDF):
         self.rect(0, 60, self.w, 1.6, "F")
         self.set_xy(self.l_margin, 14)
         self.set_font("tc", "", 9)
-        self.set_text_color(186, 190, 255)
+        self.set_text_color(185, 212, 255)  # 深色封面上的主色淡藍（與網頁深色主題的 accent-ink 相同）
         self.cell(0, 5, "BNP PARIBAS CARDIF TW · " + core.tx(self.lang, "管理會計", "MANAGEMENT ACCOUNTING"))
         self.set_xy(self.l_margin, 22)
         self.set_font("tc", "B", 22)
@@ -92,8 +93,8 @@ class BudgetPDF(FPDF):
             w = self.get_string_width(item) + 8
             if x + w > self.w - self.r_margin:  # 標籤太多時不超出頁面
                 break
-            self.set_fill_color(42, 48, 64)
-            self.set_text_color(232, 235, 242)
+            self.set_fill_color(42, 46, 54)
+            self.set_text_color(243, 244, 246)
             self.set_xy(x, 46)
             self.cell(w, 6.5, item, fill=True, align="C")
             x += w + 3
@@ -426,15 +427,15 @@ def ledger_xlsx(year, depts, ds="", lang="zh", role="cfo", dept="", gl="", cfo_o
 
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
-    font = "Microsoft JhengHei" if lang != "en" else "Calibri"
-    base = {"font_name": font, "font_size": 10, "valign": "vcenter"}
-    head = wb.add_format({**base, "bold": True, "font_color": "#FFFFFF", "bg_color": "#111827", "border": 1, "border_color": "#111827"})
+    base = {"font_name": "Microsoft JhengHei", "font_size": 10, "valign": "vcenter"}  # 黑體優先，中英文版相同
+    head = wb.add_format({**base, "bold": True, "font_color": "#FFFFFF", "bg_color": "#111318", "border": 1, "border_color": "#111318"})
+    head_r = wb.add_format({**base, "bold": True, "font_color": "#FFFFFF", "bg_color": "#111318", "border": 1, "border_color": "#111318", "align": "right"})
     cell = wb.add_format(base)
     money = wb.add_format({**base, "num_format": "#,##0"})
     total_lbl = wb.add_format({**base, "bold": True, "top": 1})
     total_num = wb.add_format({**base, "bold": True, "top": 1, "num_format": "#,##0"})
     title = wb.add_format({**base, "bold": True, "font_size": 14})
-    muted = wb.add_format({**base, "font_color": "#5A6272"})
+    muted = wb.add_format({**base, "font_color": "#5F6574"})
 
     ws = wb.add_worksheet(T("費用明細", "Expense lines"))
     cols = [(T("日期", "Date"), 11, "date"), (T("憑證號碼", "Voucher"), 16, "id"), (T("採購單號", "PO"), 15, "po"),
@@ -442,9 +443,11 @@ def ledger_xlsx(year, depts, ds="", lang="zh", role="cfo", dept="", gl="", cfo_o
             (T("會計科目", "Category"), 16, "account"), (T("供應商", "Vendor"), 28, "vendor"), (T("摘要", "Description"), 26, "memo"),
             (T("專案", "Project"), 24, "project"), (T("經辦人", "Handled by"), 14, "handler"),
             (T("核准層級", "Approval"), 10, "cfo"), (T("金額（元）", "Amount (NT$)"), 14, "amount")]
-    for j, (name, width, _) in enumerate(cols):
-        ws.write(0, j, name, head)
+    for j, (name, width, k) in enumerate(cols):
+        ws.write(0, j, name, head_r if k == "amount" else head)  # 金額欄標題與數字同樣靠右
         ws.set_column(j, j, width)
+    ws.set_row(0, 24)  # 標題列與內容列上下留白一致
+    ws.set_default_row(19)
     for i, l in enumerate(lines, start=1):
         for j, (_, _, k) in enumerate(cols):
             if k == "amount":
