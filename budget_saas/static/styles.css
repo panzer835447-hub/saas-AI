@@ -1,15 +1,15 @@
 /* ===== 設計 token：淺色為預設，深色以 data-theme 切換 =====
-   色彩為本專案自訂（主色深海藍；「落後」用青色以免與主色混淆），對比度以 tools/palettes_gen.py 依 WCAG 驗證 */
+   色彩為本專案自訂（主色翡翠綠；「正常」用中性灰，綠色只代表主色），對比度以 tools/palettes_gen.py 依 WCAG 驗證 */
 :root {
   --bg: #F3F4F7; --surface: #FFFFFF; --raised: #F9FAFB; --hover: #EEF0F4;
   --border: #E4E7EC; --border-strong: #D0D5DD; --divider: #EEF0F3;
   --text: #111318; --text-2: #3A3F4B; --muted: #5F6574;
-  --accent: #1A56DB; --accent-ink: #1443AD; --accent-soft: #E6ECFB; --on-accent: #FFFFFF;
+  --accent: #0B7A5E; --accent-ink: #075C46; --accent-soft: #E4F0ED; --on-accent: #FFFFFF;
   --high: #D92D20; --high-ink: #A11A10; --high-soft: #FAE6E4; --high-line: #F2B6B1;
   --watch: #D37600; --watch-ink: #8A4B00; --watch-soft: #FAEFE0;
-  --lag: #0E7C86; --lag-ink: #0A5C64; --lag-soft: #E2EFF0;
+  --lag: #2E6FD8; --lag-ink: #1D4FA8; --lag-soft: #E6EEFA;
   --ok: #5F6574; --ok-ink: #3A3F4B; --ok-soft: #EEF0F4;
-  --track: #EEF0F3; --est: #BACCF4;
+  --track: #EEF0F3; --est: #B6D7CF;
   --on-high: #FFFFFF; --on-watch: #111318; --on-lag: #FFFFFF; --on-ok: #FFFFFF;  /* 燈號格（狀態色底）上的文字：依對比度選白字或深字 */
   --series-muted: #7F8490;  /* 圖表對照系列（預算、往年、基準），對卡片 ≥ 3:1 */
   --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 1px 3px rgba(15, 23, 42, .06);
@@ -45,12 +45,12 @@
   --bg: #0A0B0E; --surface: #14161B; --raised: #1A1D23; --hover: #22252C;
   --border: #2A2E36; --border-strong: #363B45; --divider: #1F2228;
   --text: #F3F4F6; --text-2: #CDD1D8; --muted: #969BA6;
-  --accent: #6EA8FF; --accent-ink: #B9D4FF; --accent-soft: #222D3F; --on-accent: #0A0B0E;
+  --accent: #3DD39E; --accent-ink: #A6EFD3; --accent-soft: #1B3430; --on-accent: #0A0B0E;
   --high: #FF6159; --high-ink: #FFA39C; --high-soft: #3E2426; --high-line: #663031;
   --watch: #F5A524; --watch-ink: #FFD083; --watch-soft: #3C301D;
-  --lag: #3FBFC9; --lag-ink: #A6E6EA; --lag-soft: #1C343A;
+  --lag: #6AA6F0; --lag-ink: #AFCFF8; --lag-soft: #233041;
   --ok: #969BA6; --ok-ink: #CDD1D8; --ok-soft: #22252C;
-  --track: #2A2E36; --est: #364D72;
+  --track: #2A2E36; --est: #245E4D;
   --on-high: #0A0B0E; --on-watch: #0A0B0E; --on-lag: #0A0B0E; --on-ok: #0A0B0E;
   --series-muted: #7C808A;
   --shadow: 0 1px 2px rgba(0, 0, 0, .3);

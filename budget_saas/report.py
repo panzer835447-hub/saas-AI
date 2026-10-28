@@ -20,8 +20,8 @@ from ai import MARK_CLOSE, MARK_OPEN
 FONTS = {"": Path(__file__).parent / "fonts" / "NotoSansTC-Regular.ttf", "B": Path(__file__).parent / "fonts" / "NotoSansTC-Bold.ttf"}
 # 與網頁設計系統相同的色彩（styles.css 的淺色 token）；注意色在白紙上以文字出現，取深一階以維持 4.5:1
 INK, MUTED, LINE, SOFT = (17, 19, 24), (95, 101, 116), (228, 231, 236), (243, 244, 247)
-BRAND = (26, 86, 219)
-STATUS_RGB = {"high": (217, 45, 32), "watch": (168, 95, 0), "lag": (14, 124, 134), "ok": (95, 101, 116)}
+BRAND = (11, 122, 94)  # 翡翠綠 #0B7A5E
+STATUS_RGB = {"high": (217, 45, 32), "watch": (168, 95, 0), "lag": (46, 111, 216), "ok": (95, 101, 116)}
 ACTIONS = {
     "high": ("檢視剩餘月份的採購、合約與支出計畫，必要時暫緩非必要支出。", "Review remaining-month purchases and contracts; defer discretionary spend if needed."),
     "watch": ("每月追蹤主要費用科目，確認超支是一次性還是持續性。", "Track major categories monthly and confirm whether the overrun is one-off or recurring."),
@@ -77,7 +77,7 @@ class BudgetPDF(FPDF):
         self.rect(0, 60, self.w, 1.6, "F")
         self.set_xy(self.l_margin, 14)
         self.set_font("tc", "", 9)
-        self.set_text_color(185, 212, 255)  # 深色封面上的主色淡藍（與網頁深色主題的 accent-ink 相同）
+        self.set_text_color(166, 239, 211)  # 深色封面上的主色淡綠（與網頁深色主題的 accent-ink 相同）
         self.cell(0, 5, "BNP PARIBAS CARDIF TW · " + core.tx(self.lang, "管理會計", "MANAGEMENT ACCOUNTING"))
         self.set_xy(self.l_margin, 22)
         self.set_font("tc", "B", 22)
