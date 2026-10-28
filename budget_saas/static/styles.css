@@ -267,7 +267,7 @@ h1, h2, h3 { margin: 0; }
 .prio-item:hover { background: var(--hover); }
 .prio-bar { width: 4px; height: 32px; border-radius: var(--r-hair); flex: none; }
 .prio-name { font-size: var(--fs-body); font-weight: 600; }
-.prio-why { font-size: var(--fs-small); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prio-why { font-size: var(--fs-small); color: var(--muted); }
 .prio-amt { text-align: right; font-size: var(--fs-body); font-weight: 600; white-space: nowrap; }
 .prio-amt small { display: block; font-size: var(--fs-small); font-weight: 400; color: var(--muted); }
 .prio-cta { margin-top: auto; display: flex; align-items: center; justify-content: center; height: 36px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent-ink); font-size: var(--fs-body-sm); font-weight: 600; border: 0; }
@@ -287,6 +287,8 @@ td { padding: 12px 16px; font-size: var(--fs-body); border-bottom: 1px solid var
 tbody tr { cursor: pointer; }
 tbody tr:hover td { background: var(--hover); }
 tbody tr:last-child td { border-bottom: 0; }
+/* 欄位很多的表格（10 欄以上）：欄間距收窄，筆電寬度（1280）不必左右捲動；首末欄仍對齊卡片內距 */
+table.dense :is(th, td) { padding-left: 12px; padding-right: 12px; }
 /* 滿版表格（直接放在卡片內）首末欄對齊卡片內距；放在有內距的卡片裡時首末欄不再內縮 */ .card > .table-wrap table:not(.heat):not(.replay) :is(th, td):first-child, .card:not(.card-pad) > details .table-wrap table :is(th, td):first-child { padding-left: var(--card-pad); }
 .card > .table-wrap table:not(.heat):not(.replay) :is(th, td):last-child, .card:not(.card-pad) > details .table-wrap table :is(th, td):last-child { padding-right: var(--card-pad); } .card-pad table :is(th, td):first-child { padding-left: 0; } .card-pad table :is(th, td):last-child { padding-right: 0; }
 .card > .table-wrap:last-child, .card > details:last-child .table-wrap { padding-bottom: 8px; }
@@ -298,6 +300,8 @@ tbody tr:last-child td { border-bottom: 0; }
    有 .grow 的長文字欄（例如主要原因）吸收剩餘寬度，此時數字欄依內容收合 */
 table:not(.heat):not(.replay) :is(th, td):first-child { width: 1%; }
 table :is(th, td).grow { width: 100%; max-width: 0; }
+/* 長文字欄換行顯示完整內容，不用省略號截斷（主要原因是評審最需要讀到的資訊） */
+table td.why.grow { white-space: normal; text-overflow: clip; line-height: var(--lh-body); }
 table:has(.grow) :is(th, td).r { width: 1%; }
 /* 欄位少（三欄以內）的表格不撐滿卡片 */
 .card-pad table:not(:has(th:nth-child(4))) { width: auto; min-width: min(100%, 560px); }
@@ -414,7 +418,6 @@ a.ghost-btn { text-decoration: none; }
 .chk.big { width: 48px; height: 48px; border-radius: var(--r-full); margin: 0 auto; }
 
 /* ===== 預算分析 ===== */
-.spark { display: block; }
 table.compact td { padding-top: 10px; padding-bottom: 10px; }
 table.heat { border-collapse: separate; border-spacing: 4px; padding: 0 12px 8px; } /* 12 + 格距 4 + 首欄內距 4 = 卡片內距 20；底部 8 + 4 + 外框 8 = 20 */
 .heat th { background: none; border: 0; padding: 4px 2px; font-size: var(--fs-caption); }
@@ -704,7 +707,8 @@ mark { background: var(--watch-soft); color: var(--watch-ink); padding: 0 4px; b
   .brand { padding: 0; }
   .nav { flex-direction: row; }
   .nav-item { white-space: nowrap; padding: 8px 10px; gap: 8px; }
-  .topbar { padding-left: 16px; padding-right: 16px; }
+  /* 窄螢幕的頂部列會折成三行（約佔手機畫面三分之一），不再固定在頂端，捲動時讓出空間給內容 */
+  .topbar { position: static; padding-left: 16px; padding-right: 16px; }
   .content { --page-pad: 16px; } /* 窄螢幕四邊同為 16 */
   .notice { margin: 12px 16px 0; }
   .icon-btn.only-narrow { display: grid; }

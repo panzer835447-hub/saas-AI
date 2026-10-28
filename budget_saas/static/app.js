@@ -126,11 +126,14 @@ function scopeParams(s, extra = {}) {
 }
 
 // ===== ECharts 包裝 =====
-function EChart({ option, cls = "chart", label, height }) {
+function EChart({ option, cls = "chart", label, height, onClick }) {
   const ref = useRef(null);
   const inst = useRef(null);
+  const click = useRef(onClick);
+  click.current = onClick;
   useEffect(() => {
     inst.current = echarts.init(ref.current, null, { renderer: "svg" });
+    inst.current.on("click", (p) => click.current && click.current(p));
     const ro = new ResizeObserver(() => inst.current && inst.current.resize());
     ro.observe(ref.current);
     return () => { ro.disconnect(); inst.current.dispose(); inst.current = null; };
@@ -515,7 +518,7 @@ const QUICK_PROMPTS = (data) => {
 };
 
 function Hero({ data, go }) {
-  const tt = data.totals, p = data.prior;
+  const tt = data.totals;
   const over = tt.variance > 0;
   const closed = data.cutoff >= 12; // 已結算完整年度：顯示全年實際，不再有預測區間
   return html`<section class="hero">
@@ -525,7 +528,7 @@ function Hero({ data, go }) {
         <span class="big num">${fmc(tt.forecast)}</span>
         <span class=${"pill num " + (over ? "high" : "ok")}>${fmc(tt.variance, true)} · ${pct(tt.variancePct, true)}</span>
       </div>
-      <div class="hero-sub">${t("年度預算", "Annual budget")} <b class="num">${fmc(tt.budget)}</b>${p.budgetYoy != null ? html` ${t("（較 ", "(")}FY${p.year} <span class="num">${pct(p.budgetYoy, true)}</span>${t("）", ")")}` : null}${closed ? html` · ${t("12 個月皆已結算", "all 12 months closed")}` : html` · ${t("P80 合理區間", "P80 likely range")} <span class="num">${pct(tt.lowPct)}–${pct(tt.highPct)}</span>`}</div>
+      <div class="hero-sub">${t("年度預算", "Annual budget")} <b class="num">${fmc(tt.budget)}</b>${closed ? html` · ${t("12 個月皆已結算", "all 12 months closed")}` : null}</div>
       <div class="tags">${data.statusCounts.map((s) => html`<span class="tally"><i class=${"bg-" + s.key}></i>${sl(s.key)} <b class="num">${s.count}</b></span>`)}</div>
     </div>
     <div class="card ai-card">
@@ -534,6 +537,12 @@ function Hero({ data, go }) {
       <div class="prompts">${QUICK_PROMPTS(data).map((q) => html`<button type="button" class="prompt" onClick=${() => go("/assistant", q)}>${q}</button>`)}</div>
     </div>
   </section>`;
+}
+
+// 超支部門數包含只超出一點點、未達預警門檻的部門；註明其中幾個亮燈，才不會和上方「高風險／需注意」的數量對不上
+function flaggedNote(data) {
+  const n = data.statusCounts.filter((s) => s.key === "high" || s.key === "watch").reduce((a, s) => a + s.count, 0);
+  return t(`其中 ${n} 個達預警門檻`, `${n} past the alert threshold`);
 }
 
 function Kpis({ data, compare }) {
@@ -553,7 +562,7 @@ function Kpis({ data, compare }) {
       data.cutoff >= 12 ? t("全年實際數", "Full-year actual") : html`${t("P80 區間", "P80 range")} <span class="num">${pct(tt.lowPct)}–${pct(tt.highPct)}</span>`)}
     ${compare === "prior" && p.fullActual
       ? kpi(t("年底預估 vs 去年全年", "Year-end vs last full year"), pct((tt.forecast / p.fullActual - 1) * 100, true), html`${t(`FY${p.year} 全年實際`, `FY${p.year} actual`)} <span class="num">${fmc(p.fullActual)}</span>`)
-      : kpi(data.cutoff >= 12 ? t("超支部門", "Departments over budget") : t("預估超支部門", "Departments over budget"), html`${tt.overCount} <small>/ ${data.departmentCount}</small>`, html`${t("年底差異", "Year-end gap")} <span class=${"num " + tone(tt.variance)}>${fmc(tt.variance, true)}</span>`)}
+      : kpi(data.cutoff >= 12 ? t("超支部門", "Departments over budget") : t("預估超支部門", "Departments over budget"), html`${tt.overCount} <small>/ ${data.departmentCount}</small>`, flaggedNote(data))}
   </section>`;
 }
 
@@ -595,10 +604,109 @@ function trajectoryOption(data, compare, theme) {
   return o;
 }
 
-function Trajectory({ data, compare, theme }) {
+// 預算 → 年底預估的部門橋接圖（瀑布圖）：財務報告解釋「預算與預估差在哪裡」的標準圖。
+// 部門依差額由大到小排，紅色讓預估增加、藍色讓預估減少。部門差額只占預算的幾 %，所以金額軸不從 0 起；
+// 兩端（預算、預估）長條底部畫「≈」截斷符號，提醒那兩根的高度不是從 0 量起。手機寬度改成橫向，部門名稱才放得下
+function bridgeOption(data) {
+  const closed = data.cutoff >= 12, tt = data.totals;
+  const horizontal = window.innerWidth < 560;
+  const deps = [...data.departments].sort((a, b) => b.variance - a.variance);
+  const endName = closed ? t("全年實際", "Full-year actual") : t("年底預估", "Year-end forecast");
+  const names = [t("年度預算", "Budget"), ...deps.map((d) => dn(d.name)), endName];
+  const last = names.length - 1;
+  const ends = names.map((_, i) => (i === 0 ? tt.budget : i === last ? tt.forecast : null));
+  const floor = [0], up = [null], down = [null];
+  let run = tt.budget;
+  deps.forEach((d) => {
+    floor.push(d.variance >= 0 ? run : run + d.variance);
+    up.push(d.variance >= 0 ? d.variance : null);
+    down.push(d.variance < 0 ? -d.variance : null);
+    run += d.variance;
+  });
+  floor.push(0); up.push(null); down.push(null);
+  // 金額軸下限：比整條路徑最低點再低約半格，取整齊的刻度；算出來若 ≤ 0 就從 0 畫，也就不需要截斷符號
+  const path = [tt.budget, tt.forecast, ...floor.slice(1, last)];
+  const lowPt = Math.min(...path), span = Math.max(...path, ...floor.slice(1, last).map((f, i) => f + (up[i + 1] || down[i + 1] || 0))) - lowPt;
+  const raw = Math.max(span, tt.budget * 0.01) / 4, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].find((s) => s * mag >= raw) * mag;
+  const lo = Math.max(0, Math.floor((lowPt - step * 0.6) / step) * step);
+  const o = baseChart();
+  const cat = { type: "category", data: names, axisTick: { show: false }, axisLine: { lineStyle: { color: css("--border") } },
+    axisLabel: { color: css("--text-2"), fontSize: 12, interval: 0, ...(horizontal ? {} : { width: 64, overflow: "break" }) } };
+  const val = { type: "value", min: lo, splitLine: { lineStyle: { color: css("--divider") } }, axisLabel: { color: css("--muted"), formatter: moneyAxis } };
+  // 橫向時右側多留約一半寬度給長條尾端的金額標籤，刻度只取 3 格
+  if (horizontal) { o.yAxis = { ...cat, inverse: true }; o.xAxis = { ...val, splitNumber: 3, max: (v) => v.max + (v.max - lo) * 0.5, axisLabel: { ...val.axisLabel, hideOverlap: true, showMinLabel: false, showMaxLabel: false } }; }
+  else { o.xAxis = cat; o.yAxis = val; }
+  o.grid = { ...o.grid, top: 24, right: horizontal ? 16 : 8 };
+  o.tooltip = { ...o.tooltip, axisPointer: SHADOW_POINTER(), formatter: (ps) => {
+    const i = ps[0].dataIndex;
+    if (i === 0 || i === last) return `<b>${names[i]}</b>　${fmc(ends[i])}`;
+    const d = deps[i - 1];
+    // 兩種幅度：占該部門預算（嚴重程度）與占全公司預算（對總數的衝擊）
+    return `<b>${dn(d.name)}</b>　${sl(d.statusKey)}<br>${t("差額", "Gap")} <b>${fmc(d.variance, true)}</b><br>`
+      + `${t("占部門預算", "Of department budget")} ${pct(d.variancePct, true)}　${t("占全公司預算", "Of company budget")} ${pct((d.variance / tt.budget) * 100, true, 2)}<br>`
+      + `${endName} ${fmc(d.forecast)} / ${t("預算", "budget")} ${fmc(d.budget)}`;
+  } };
+  const pos = (sign) => (horizontal ? (sign > 0 ? "right" : "left") : sign > 0 ? "top" : "bottom");
+  const lbl = (sign) => ({ show: true, position: pos(sign), color: css("--text-2"), fontSize: 11, formatter: (p) => fmc(sign * p.value, true) });
+  const br = horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0];
+  const endColor = (i) => (i === 0 ? css("--series-muted") : tt.variance > 0 ? css("--high") : css("--accent"));
+  // 截斷符號：卡片底色的鋸齒帶，橫跨長條底部
+  const zig = "path://M0,3 L4,0 L8,3 L12,0 L16,3 L20,0 L24,3 L28,0 L32,3 L36,0 L40,3 L40,7 L36,4 L32,7 L28,4 L24,7 L20,4 L16,7 L12,4 L8,7 L4,4 L0,7 Z";
+  const breakAt = lo + step * 0.25;
+  o.series = [
+    { type: "bar", stack: "w", silent: true, itemStyle: { color: "transparent" }, data: floor, barMaxWidth: 36, tooltip: { show: false } },
+    { name: "ends", type: "bar", stack: "w", barMaxWidth: 36,
+      data: ends.map((v, i) => (v == null ? null : { value: v, itemStyle: { color: endColor(i), borderRadius: br } })),
+      label: { show: true, position: pos(1), color: css("--text"), fontWeight: 600, fontSize: 12, formatter: (p) => fmc(ends[p.dataIndex]) },
+      ...(lo > 0 ? { markPoint: { silent: true, symbol: zig, symbolSize: horizontal ? [8, 44] : [44, 8], symbolRotate: horizontal ? 90 : 0, itemStyle: { color: css("--surface") }, label: { show: false },
+        data: [0, last].map((i) => ({ coord: horizontal ? [breakAt, i] : [i, breakAt] })) } } : {}) },
+    { name: "up", type: "bar", stack: "w", data: up, itemStyle: { color: css("--high"), borderRadius: 2 }, label: lbl(1) },
+    { name: "down", type: "bar", stack: "w", data: down, itemStyle: { color: css("--lag"), borderRadius: 2 }, label: lbl(-1) },
+  ];
+  return { option: o, deps, lo };
+}
+
+// 橋接圖副標：直接點出最大的不利與有利差額來源（用中性的「來源／抵銷」，不寫成指責）
+function bridgeInsight(deps, closed) {
+  const top = deps[0], low = deps[deps.length - 1];
+  const parts = [];
+  if (top && top.variance > 0) parts.push(t(`${dn(top.name)} ${fmc(top.variance, true)} 是最大的超支來源`, `${dn(top.name)} (${fmc(top.variance, true)}) is the largest overspend`));
+  if (low && low.variance < 0) parts.push(t(`${dn(low.name)} ${fmc(low.variance, true)} 抵銷最多`, `${dn(low.name)} (${fmc(low.variance, true)}) offsets the most`));
+  if (!parts.length) return closed ? t("各部門全年實際與預算相符", "Every department finished on budget") : t("各部門年底預估與預算相符", "Every department is forecast on budget");
+  return parts.join(t("；", "; "));
+}
+
+function Trajectory({ data, compare, theme, openDept }) {
+  // 單一部門（例如部門主管）時橋接圖只有一根，預設改看累計軌跡
+  const [view, setView] = useState(() => store.get("mainChart") || (data.departments.length > 1 ? "bridge" : "trend"));
+  const pick = (v) => { setView(v); store.set("mainChart", v); };
   const option = useMemo(() => trajectoryOption(data, compare, theme), [data, compare, theme, LANG]);
+  const bridge = useMemo(() => bridgeOption(data), [data, theme, LANG]);
   const prev = data.history[data.history.length - 1];
   const y = data.prior.ytdYoy;
+  const closed = data.cutoff >= 12, tt = data.totals;
+  const seg = html`<div class="seg right" role="group" aria-label=${t("圖表檢視", "Chart view")}>
+    <button type="button" aria-pressed=${view === "bridge"} onClick=${() => pick("bridge")}>${t("差額來源", "Gap drivers")}</button>
+    <button type="button" aria-pressed=${view === "trend"} onClick=${() => pick("trend")}>${t("累計軌跡", "Trajectory")}</button></div>`;
+  if (view === "bridge") return html`<div class="card card-pad" style="min-width:0">
+    <div class="card-head">
+      <h2 class="card-title">${closed ? t("從預算到全年實際：差額來自哪些部門？", "From budget to full-year actual: which departments drive the gap?") : t("從預算到年底預估：差額來自哪些部門？", "From budget to year-end forecast: which departments drive the gap?")}</h2>
+      <${Info}><p>${t("財務常用的橋接圖（瀑布圖）。最左是年度預算，每根長條是一個部門讓年底金額增加（往上）或減少（往下）多少，最右是年底金額。點部門長條可看該部門細節。",
+        "A budget-to-forecast bridge (waterfall). The left bar is the annual budget; each department bar shows how much it adds (up) or removes (down); the right bar is the year-end total. Click a department bar for details.")}</p>
+        <p>${t("這是費用：超出預算是不利差異，低於預算是有利差異。但低於預算也可能代表專案延後或職缺未補，請搭配部門的「執行落後」燈號判讀，所以有利差異用藍色而不是綠色。",
+          "These are costs: over budget is an adverse variance, under budget a favourable one. Under budget can also mean delayed projects or unfilled roles, so read it with the department's 'behind plan' flag; that is why favourable is blue rather than green.")}</p>
+        ${bridge.lo > 0 ? html`<p>${t(`部門差額只占預算的幾 %，所以金額軸從 ${fmc(bridge.lo)} 起；兩端長條底部的鋸齒表示座標軸被截斷，那兩根的高度不是從 0 量起。部門長條的長度才是實際差額。`,
+          `Department gaps are a few per cent of the budget, so the axis starts at ${fmc(bridge.lo)}. The zigzag on the two end bars marks the broken axis: their heights are not measured from zero. Department bar lengths are the actual gaps.`)}</p>` : null}</${Info}>
+      <span class="card-sub">${bridgeInsight(bridge.deps, closed)}</span>
+      ${seg}
+    </div>
+    <div class="legend">
+      <span><i class="sw-block bg-high"></i>${t("不利差異（超支）", "Adverse (over budget)")}</span><span><i class="sw-block bg-lag"></i>${t("有利差異（低於預算）", "Favourable (under budget)")}</span>
+    </div>
+    <${EChart} option=${bridge.option} label=${t(`預算 ${fmc(tt.budget)} 到年底 ${fmc(tt.forecast)} 的部門橋接圖`, `Bridge from budget ${fmc(tt.budget)} to year-end ${fmc(tt.forecast)} by department`)}
+      onClick=${(p) => { if (p.seriesName === "up" || p.seriesName === "down") openDept(bridge.deps[p.dataIndex - 1].id); }} />
+  </div>`;
   return html`<div class="card card-pad" style="min-width:0">
     <div class="card-head">
       <h2 class="card-title">${t("累計支出軌跡：今年 vs 預算 vs 歷年", "Cumulative spending: this year vs budget vs past years")}</h2>
@@ -606,12 +714,13 @@ function Trajectory({ data, compare, theme }) {
       <span class="card-sub">${data.cutoff >= 12 ? t("全年已結算", "Full year closed") : t(`${data.cutoff} 月後為預測`, `Forecast after ${mon(data.cutoff)}`)}${prev && y != null ? t(
         html` · 1–${data.cutoff} 月比 FY${prev.year} 同期${y >= 0 ? "多" : "少"}花 <b class="num">${pct(Math.abs(y))}</b>`,
         html` · ${mon(1)}–${mon(data.cutoff)} <b class="num">${pct(Math.abs(y))}</b> ${y >= 0 ? "above" : "below"} FY${prev.year}`) : null}</span>
-      <div class="legend right">
-        <span><i class="sw" style=${{ borderColor: "var(--accent)" }}></i>${t(`FY${data.year} 實際`, `FY${data.year} actual`)}</span>
-        <span><i class="sw" style=${{ borderColor: "var(--accent)", borderTopStyle: "dashed" }}></i>${t("預測", "Forecast")}</span>
-        <span><i class="sw" style=${{ borderColor: "var(--text)", borderTopStyle: "dotted", borderTopWidth: "2px" }}></i>${t("預算", "Budget")}</span>
-        ${data.history.slice(-2).map((h, i) => html`<span><i class="sw" style=${{ borderColor: i ? "var(--text-2)" : "var(--muted)", borderTopWidth: "2px" }}></i>FY${h.year}</span>`)}
-      </div>
+      ${seg}
+    </div>
+    <div class="legend">
+      <span><i class="sw" style=${{ borderColor: "var(--accent)" }}></i>${t(`FY${data.year} 實際`, `FY${data.year} actual`)}</span>
+      <span><i class="sw" style=${{ borderColor: "var(--accent)", borderTopStyle: "dashed" }}></i>${t("預測", "Forecast")}</span>
+      <span><i class="sw" style=${{ borderColor: "var(--text)", borderTopStyle: "dotted", borderTopWidth: "2px" }}></i>${t("預算", "Budget")}</span>
+      ${data.history.slice(-2).map((h, i) => html`<span><i class="sw" style=${{ borderColor: i ? "var(--text-2)" : "var(--muted)", borderTopWidth: "2px" }}></i>FY${h.year}</span>`)}
     </div>
     <${EChart} option=${option} label=${t(`累計支出軌跡，年底預估 ${fmc(data.totals.forecast)}，預算 ${fmc(data.totals.budget)}`, `Cumulative spending; year-end forecast ${fmc(data.totals.forecast)}, budget ${fmc(data.totals.budget)}`)} />
   </div>`;
@@ -691,16 +800,22 @@ function deptHistoryOption(d, year) {
   const o = baseChart();
   const tone = { high: "--high", watch: "--watch", lag: "--lag", ok: "--ok" };
   o.xAxis = { ...o.xAxis, boundaryGap: true, axisLabel: { ...o.xAxis.axisLabel, interval: 0 }, data: [...d.history.map((h) => `FY${h.year}`), t(`FY${year} 預估`, `FY${year} fcst`)] };
-  // 下限 60%，上傳資料若有更低的使用率就往下延伸，避免長條被切掉
-  o.yAxis = { ...o.yAxis, min: (v) => Math.min(60, Math.floor(v.min / 10) * 10), axisLabel: { color: css("--muted"), formatter: "{value}%" } };
-  o.tooltip = { ...o.tooltip, formatter: (ps) => `<b>${ps[0].axisValue}</b><br>${t("預算使用率", "Budget use")}　<b>${pct(ps[0].value)}</b>` };
+  // 長條從 100%（剛好用完預算）往上或往下長：長度就是超支／結餘幅度。
+  // 若長條從 0 畫起差異幾乎看不出來，若從 60% 畫起又會把 100% 和 115% 的差距放大好幾倍
+  const uses = [...d.history.map((h) => h.use), d.usePct];
+  const bar = (use, color) => ({ value: use - 100, use, itemStyle: { color, borderRadius: use >= 100 ? [4, 4, 0, 0] : [0, 0, 4, 4] },
+    label: { position: use >= 100 ? "top" : "bottom" } });
+  o.yAxis = { ...o.yAxis, axisLabel: { color: css("--muted"), formatter: (v) => `${100 + v}%` } };
+  o.tooltip = { ...o.tooltip, formatter: (ps) => `<b>${ps[0].axisValue}</b><br>${t("預算使用率", "Budget use")}　<b>${pct(ps[0].data.use)}</b>` };
   o.series = [{
     type: "bar", barMaxWidth: 24,
-    data: [...d.history.map((h) => ({ value: h.use, itemStyle: { color: css("--series-muted") } })), { value: d.usePct, itemStyle: { color: css(tone[d.statusKey]) } }],
-    itemStyle: { borderRadius: [4, 4, 0, 0] },
-    label: { show: true, position: "top", formatter: (p) => pct(p.value), color: css("--text-2"), fontSize: 11 },
-    markLine: { silent: true, symbol: "none", lineStyle: { color: css("--text"), type: [3, 3] }, label: { show: false }, data: [{ yAxis: 100 }] },
+    data: [...d.history.map((h) => bar(h.use, css("--series-muted"))), bar(d.usePct, css(tone[d.statusKey]))],
+    label: { show: true, formatter: (p) => pct(p.data.use), color: css("--text-2"), fontSize: 11 },
+    markLine: { silent: true, symbol: "none", lineStyle: { color: css("--text"), type: [3, 3] }, label: { show: false }, data: [{ yAxis: 0 }] },
   }];
+  // 上下對稱、至少 ±10 個百分點（1% 的差異不會被畫成滿版），再多留 5 點給長條尾端的數字
+  const span = Math.ceil(Math.max(10, ...uses.map((u) => Math.abs(u - 100))) / 5) * 5 + 5;
+  o.yAxis.min = -span; o.yAxis.max = span;
   return o;
 }
 
@@ -756,7 +871,7 @@ function Overview({ data, compare, theme, go }) {
     <${Hero} data=${data} go=${go} />
     <${Kpis} data=${data} compare=${compare} />
     <section class="bento">
-      <${Trajectory} data=${data} compare=${compare} theme=${theme} />
+      <${Trajectory} data=${data} compare=${compare} theme=${theme} openDept=${setOpenId} />
       <${Priority} data=${data} openDept=${setOpenId} go=${go} />
     </section>
     <${DeptTable} data=${data} compare=${compare} openDept=${setOpenId} />
@@ -809,17 +924,6 @@ function ytdVarianceOption(rows) {
   return o;
 }
 
-function Spark({ values }) {
-  // 每月差異率小長條：往上紅＝超出當月預算，往下藍＝低於
-  const max = Math.max(5, ...values.filter((v) => v != null).map(Math.abs));
-  const w = 8, gap = 3, h = 28;
-  return html`<svg class="spark" width=${values.length * (w + gap)} height=${h} viewBox=${`0 0 ${values.length * (w + gap)} ${h}`} aria-hidden="true">
-    <line x1="0" x2=${values.length * (w + gap)} y1=${h / 2} y2=${h / 2} stroke="var(--border-strong)" stroke-width="1"></line>
-    ${values.map((v, i) => v == null ? null : html`<rect x=${i * (w + gap)} width=${w} rx="1.5"
-      y=${v > 0 ? h / 2 - (v / max) * (h / 2) : h / 2} height=${Math.max(1, (Math.abs(v) / max) * (h / 2))} fill=${v > 0 ? "var(--high)" : "var(--lag)"}></rect>`)}
-  </svg>`;
-}
-
 function VarianceTab({ data, openDept }) {
   const rows = data.departments.map((d) => ({ ...d, v: d.actualYtd - d.budgetYtd, vPct: d.execRate - 100, mv: monthVar(d, data.cutoff) }));
   const net = rows.reduce((s, r) => s + r.v, 0), netPct = (net / data.totals.budgetYtd) * 100;
@@ -852,12 +956,11 @@ function VarianceTab({ data, openDept }) {
       <div class="card">
         <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("差異明細", "Variance detail")}</h2><span class="card-sub">${unit()} · ${t("點一列看部門細節", "click a row for details")}</span></div></div>
         <div class="table-wrap"><table class="compact">
-          <thead><tr><th>${t("部門", "Department")}</th><th class="r">${t("同期預算", "Budget to date")}</th><th class="r">${t("實際", "Actual")}</th><th class="r">${t("差異", "Variance")}</th><th class="r">${t("差異率", "Variance %")}</th><th>${t("每月差異率", "Monthly variance")}</th></tr></thead>
+          <thead><tr><th>${t("部門", "Department")}</th><th class="r">${t("同期預算", "Budget to date")}</th><th class="r">${t("實際", "Actual")}</th><th class="r">${t("差異", "Variance")}</th><th class="r">${t("差異率", "Variance %")}</th></tr></thead>
           <tbody>${sorted.map((r) => html`<tr onClick=${() => openDept(r.id)}>
             <td><div class="dept-cell">${dn(r.name)}</div></td>
             <td class="r num">${wan(r.budgetYtd)}</td><td class="r num">${wan(r.actualYtd)}</td>
             <td class=${"r num " + (r.v > 0 ? "c-high" : "c-lag")}>${wan(r.v, true)}</td><td class=${"r num " + (r.v > 0 ? "c-high" : "c-lag")}>${pct(r.vPct, true)}</td>
-            <td><${Spark} values=${r.mv} /></td>
           </tr>`)}</tbody>
         </table></div>
       </div>
@@ -983,6 +1086,7 @@ function HistoryTab({ data, theme, openDept }) {
   const years = [...new Set(data.departments.flatMap((d) => d.history.map((h) => h.year)))].sort();
   const cellTone = STATUS_BY_USE;
   if (!data.history.length && !years.length) return html`<div class="card empty"><h2>${t("所選年度之前沒有完整年度可以比較", "There is no complete earlier year to compare with")}</h2></div>`;
+  // 部門折線圖與執行率表上下排：執行率表有 6～7 欄，和圖並排會被擠到要左右捲動
   return html`
     <section class="card card-pad">
       <div class="card-head"><h2 class="card-title">${t("歷年預算執行：每年花得比預算多還是少？", "Year by year: did we spend more or less than budget?")}</h2>
@@ -990,7 +1094,7 @@ function HistoryTab({ data, theme, openDept }) {
         <span class="card-sub">${t("柱上百分比＝執行率（實際 ÷ 預算）", "Labels = actual ÷ budget")}</span></div>
       <${EChart} option=${coOpt} cls="chart chart-tall" label=${t("歷年預算與實際支出", "Budget and actual by year")} />
     </section>
-    <section class=${years.length ? "duo" : "stack"}>
+    <section class="stack">
     <div class="card card-pad">
       <div class="card-head"><h2 class="card-title">${t("各部門歷年實際支出", "Annual spending by department")}</h2>
         <${Info}><p>${t(`實線為完整年度實際支出；點線延伸到 FY${data.year} 年底預估（空心圓）。突然跳升的年份通常有一次性支出。`, `Solid lines are complete-year actuals; dotted segments run to the FY${data.year} year-end forecast (hollow circle). Sudden jumps usually come from one-off spending.`)}</p></${Info}>
@@ -1122,7 +1226,7 @@ function ForecastTab({ data, theme, openDept }) {
       <div class="card-pad table-head"><div class="card-head"><h2 class="card-title">${t("各部門年底預估拆解", "Year-end forecast by department")}</h2>
         <${Info}><p>${t("年底預估＝55% 季節性推估＋45% 依目前速度推估。", "Year-end forecast = 55% seasonal estimate + 45% current-pace estimate.")}</p><p>${t(`季節性與合理區間依各部門過去 ${[...new Set(rows.map((r) => r.historyYears))].join("／")} 個完整年度的同期資料估計。`, `The seasonal estimate and likely range use ${[...new Set(rows.map((r) => r.historyYears))].join("/")} complete past years of same-period data.`)}</p><p>${t("「依目前速度」假設剩餘月份照今年至今的「實際 ÷ 預算」比例花用；「季節性」依歷年同期累計占全年的比例回推全年，能反映年底集中請款。", "Current pace assumes the remaining months keep this year's actual-to-budget ratio; seasonal scales up using the share of the full year that past years had spent by this month, which captures year-end spending.")}</p></${Info}>
         <span class="card-sub">${unit()} · ${t("點一列看部門細節", "click a row for details")}</span></div></div>
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table class="dense">
         <thead><tr><th>${t("部門", "Department")}</th><th>${t("狀態", "Status")}</th><th class="r">${t("全年預算", "Budget")}</th><th class="r">${t("已支出", "Spent")}</th><th class="r">${t("剩餘預估", "Remaining")}</th><th class="r">${t("年底預估", "Year-end")}</th>
           <th class="r">${t("差額", "Gap")}</th><th class="r">${t("差額率", "Gap %")}</th><th class="r">${t("依目前速度", "Current pace")}</th><th class="r">${t("季節性推估", "Seasonal")}</th><th class="r">${t("合理區間", "Likely range")}</th></tr></thead>
         <tbody>${rows.map((d) => html`<tr onClick=${() => openDept(d.id)}>
@@ -1288,7 +1392,7 @@ function AlertsTab({ data, state, openDept, go }) {
         <span class=${"tag " + d.statusKey}>${sl(d.statusKey)}</span><h3>${dn(d.name)}</h3>
         <span class=${"acard-amt num c-" + d.statusKey}>${fmc(d.variance, true)}</span>
       </div>
-      <p class="acard-msg">${t("年底預估", "Year-end forecast")} <b class="num">${fmc(d.forecast)}</b>${t("，年度預算", " vs budget")} <span class="num">${fmc(d.budget)}</span> (<span class="num">${pct(d.variancePct, true)}</span>) · ${t("合理區間", "likely range")} <span class="num">${fmc(d.low)} – ${fmc(d.high)}</span></p>
+      <p class="acard-msg">${t("年底預估", "Year-end forecast")} <b class="num">${fmc(d.forecast)}</b> · ${t("年度預算", "budget")} <span class="num">${fmc(d.budget)}</span> · ${t("差額", "gap")} <span class="num">${pct(d.variancePct, true)}</span> · ${t("合理區間", "likely range")} <span class="num">${fmc(d.low)} – ${fmc(d.high)}</span></p>
       <div class="section-title spaced">${t("為什麼亮燈", "Why it is flagged")}</div>
       <ul class="evidence">${d.evidence.map((e) => html`<li>${e}</li>`)}</ul>
       </div>
@@ -1431,14 +1535,15 @@ function hbarBase(labels) {
   const o = baseChart();
   o.tooltip = { ...o.tooltip, axisPointer: SHADOW_POINTER() };
   o.grid = { left: 8, right: 12, top: 8, bottom: 4, containLabel: true };
-  // 右側留空間給長條尾端的金額標籤
-  o.xAxis = { type: "value", max: (v) => v.max * 1.42, splitLine: { lineStyle: { color: css("--divider") } },
+  // 右側留空間給長條尾端的金額標籤；手機寬度的繪圖區很窄，比例要留更多，否則最長那條的標籤會被切掉
+  const room = window.innerWidth < 560 ? 2 : 1.42;
+  o.xAxis = { type: "value", max: (v) => v.max * room, splitLine: { lineStyle: { color: css("--divider") } },
     axisLabel: { color: css("--muted"), formatter: moneyAxis, hideOverlap: true, showMaxLabel: false } };
   o.yAxis = { type: "category", inverse: true, data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: css("--border") } },
     axisLabel: { color: css("--text-2"), fontSize: 12, width: 160, overflow: "truncate" } };
   return o;
 }
-const endLabel = (formatter) => ({ show: true, position: "right", color: css("--text"), fontSize: 11.5, formatter });
+const endLabel = (formatter) => ({ show: true, position: "right", color: css("--text"), fontSize: 12, formatter });
 
 function costDrillOption(kind, c, colors) {
   const share = (v, base) => pct(base ? (v / base) * 100 : 0);
