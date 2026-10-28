@@ -1,0 +1,146 @@
+/* ===== 本專案設計系統（正式版）：index.html 的 <html data-style="own"> 啟用；色彩 token 在 styles.css =====
+   出發點是 Apple 設計語言的原則（大量留白、以亮度與陰影分層而非框線、柔和的物理動態、清楚的層級），
+   但字型、色彩、圓角比例、元件造型與招牌細節都是本專案自訂：
+   - 字型：Inter（英數，等寬數字）＋思源黑體（中文），在 Windows 與 Mac 上看起來一致
+   - 圓角：卡片 16、控制項 10、按鈕 12（圓角方形，不用膠囊），自成一套比例
+   - 招牌細節：會滑動的選取塊（分段控制、分頁、側邊導覽）、數字滾動、卡片依序進場、可點擊卡片的左側強調線
+   互動參考：分段滑塊（iOS）、數字滾動（金融 App）、進場序列（Stripe）、圖表聚焦（Linear）、按壓回饋（Apple） */
+
+:root[data-style="own"] {
+  --font: Inter, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --fs-lead: 17px; --fs-title: 22px; --fs-kpi: 32px; --fs-hero: 56px;
+  --r-sm: 8px; --r-md: 10px; --r-lg: 16px; --r-xl: 20px;
+  --card-pad: 24px; --gap-card: 20px;
+  --fill: color-mix(in srgb, var(--muted) 12%, transparent);
+  --fill-strong: color-mix(in srgb, var(--muted) 20%, transparent);
+  --shadow: 0 1px 2px rgba(16, 19, 26, .04), 0 6px 20px rgba(16, 19, 26, .05);
+  --shadow-hover: 0 2px 4px rgba(16, 19, 26, .05), 0 14px 32px rgba(16, 19, 26, .09);
+  --shadow-lg: 0 24px 64px rgba(16, 19, 26, .18);
+  --spring: cubic-bezier(.34, 1.36, .64, 1);   /* 輕微回彈 */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --chart-smooth: .3; --chart-bar-r: 6; --chart-grid: solid; --chart-tooltip: light; --chart-anim: 700; --chart-focus: 1;
+}
+:root[data-style="own"][data-theme="dark"] {
+  --fill: color-mix(in srgb, var(--muted) 18%, transparent);
+  --fill-strong: color-mix(in srgb, var(--muted) 28%, transparent);
+  --shadow: none; --shadow-hover: 0 0 0 1px var(--border-strong);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, .6);
+}
+
+/* ---------- 字型與層級 ---------- */
+[data-style="own"] :is(.page-title, .card-title, .kpi-value, .headline .big, .acard-head h3, .drawer-title) { letter-spacing: -.02em; }
+[data-style="own"] .headline .big { letter-spacing: -.035em; }
+[data-style="own"] .num { font-feature-settings: "tnum", "cv11"; }
+
+/* ---------- 版面：側邊欄與頁面同底、毛玻璃頂部列 ---------- */
+[data-style="own"] .sidebar { background: var(--bg); border-right-color: transparent; }
+[data-style="own"] .side-status { background: var(--surface); border-color: transparent; box-shadow: var(--shadow); }
+[data-style="own"] .topbar { background: color-mix(in srgb, var(--bg) 75%, transparent); backdrop-filter: saturate(1.8) blur(20px); border-bottom-color: var(--divider); }
+/* 側邊導覽：選取塊會滑到目前頁面（位置由 motion.js 設定 --nav-x / --nav-y / --nav-w / --nav-h；窄螢幕導覽改成橫排時同樣適用）
+   第一次定位不做動畫（data-moved 由 motion.js 在定位後加上），避免每次載入都看到選取塊從 0 長出來 */
+[data-style="own"] .nav { position: relative; }
+[data-style="own"] .nav::before { content: ""; position: absolute; left: 0; top: 0; width: var(--nav-w, 0); height: var(--nav-h, 0); transform: translate(var(--nav-x, 0), var(--nav-y, 0)); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow); }
+[data-style="own"] .nav[data-moved]::before { transition: transform .45s var(--spring), width .3s var(--ease), height .3s var(--ease); }
+[data-style="own"] .nav-item { position: relative; z-index: 1; }
+[data-style="own"] .nav-item.active { background: none; color: var(--text); }
+[data-style="own"] .nav-item.active svg { color: var(--accent); }
+
+/* ---------- 卡片：無框線、陰影浮起；可點的卡片懸停浮起並出現左側強調線 ---------- */
+[data-style="own"] :is(.card, .popover, .modal) { border-color: transparent; }
+[data-style="own"] .status-card { border-top: 0; }
+[data-style="own"] .acard { border-left: 0; position: relative; transition: transform .35s var(--ease), box-shadow .35s var(--ease); }
+[data-style="own"] .acard::before { content: ""; position: absolute; left: 0; top: 20px; bottom: 20px; width: 3px; border-radius: 0 3px 3px 0; background: var(--muted); transition: top .35s var(--ease), bottom .35s var(--ease); }
+[data-style="own"] .acard.high::before { background: var(--high); } [data-style="own"] .acard.watch::before { background: var(--watch); } [data-style="own"] .acard.lag::before { background: var(--lag); }
+[data-style="own"] .acard:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+[data-style="own"] .acard:hover::before { top: 0; bottom: 0; }
+[data-style="own"] .driver { border-color: transparent; background: var(--fill); transition: transform .3s var(--ease), background-color .3s var(--ease); }
+[data-style="own"] .driver:hover { transform: translateY(-2px); background: var(--fill-strong); }
+
+/* ---------- 進場：切換頁面或分頁時，卡片依序淡入上移 ---------- */
+[data-style="own"] :is(.content, .stack, .duo, .bento, .status-cards, .driver-grid) > * { animation: own-rise .5s var(--ease) both; }
+[data-style="own"] :is(.content, .stack, .duo, .bento, .status-cards, .driver-grid) > :nth-child(2) { animation-delay: .04s; }
+[data-style="own"] :is(.content, .stack, .duo, .bento, .status-cards, .driver-grid) > :nth-child(3) { animation-delay: .08s; }
+[data-style="own"] :is(.content, .stack, .duo, .bento, .status-cards, .driver-grid) > :nth-child(4) { animation-delay: .12s; }
+[data-style="own"] :is(.content, .stack, .duo, .bento, .status-cards, .driver-grid) > :nth-child(n+5) { animation-delay: .16s; }
+@keyframes own-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* ---------- 按鈕：圓角方形；懸停微亮、按壓縮小並回彈 ---------- */
+[data-style="own"] :is(.btn-primary, .ghost-btn, .ds-btn, .prio-cta) { border-radius: var(--r-md); }
+[data-style="own"] :is(.btn-primary, .ghost-btn, .ds-btn, .prompt, .icon-btn, .prio-cta, .ctl) { transition: transform .4s var(--spring), background-color .2s var(--ease), box-shadow .2s var(--ease), color .2s var(--ease); }
+[data-style="own"] :is(.btn-primary, .ghost-btn, .ds-btn, .prompt, .icon-btn, .prio-cta):active:not(:disabled) { transform: scale(.96); transition-duration: .1s; }
+[data-style="own"] .btn-primary { box-shadow: 0 1px 2px rgba(16, 19, 26, .12), inset 0 1px 0 rgba(255, 255, 255, .14); }
+[data-style="own"] .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+[data-style="own"] :is(.ctl, .icon-btn, .ghost-btn, .ds-btn) { border-color: transparent; background: var(--fill); }
+[data-style="own"] :is(.ctl, .icon-btn, .ghost-btn, .ds-btn):hover { background: var(--fill-strong); }
+[data-style="own"] .icon-btn.sm, [data-style="own"] .ghost-btn.sm { background: transparent; }
+[data-style="own"] .ctl .k { color: var(--text-2); }
+[data-style="own"] .prompt { border-color: transparent; background: var(--fill); border-radius: var(--r-full); }
+[data-style="own"] .prompt:hover, [data-style="own"] .prompt.on { background: var(--accent-soft); color: var(--accent-ink); }
+[data-style="own"] :focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
+
+/* ---------- 分段控制與分頁：灰色軌道上會滑動的選取塊（位置由 motion.js 設定 --tx / --tw） ---------- */
+[data-style="own"] :is(.seg, .tabs) { position: relative; border: 0; padding: 3px; gap: 2px; border-radius: var(--r-md); background: var(--fill); overflow: visible; }
+[data-style="own"] :is(.seg, .tabs)::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 0; width: var(--tw, 0); transform: translateX(var(--tx, 0)); border-radius: var(--r-sm); background: var(--surface); box-shadow: 0 1px 3px rgba(16, 19, 26, .12), 0 1px 1px rgba(16, 19, 26, .04); }
+[data-style="own"] :is(.seg, .tabs)[data-moved]::before { transition: transform .45s var(--spring), width .3s var(--ease); }
+[data-style="own"][data-theme="dark"] :is(.seg, .tabs)::before { background: color-mix(in srgb, var(--text) 18%, var(--surface)); }
+[data-style="own"] :is(.seg, .tabs) button { position: relative; z-index: 1; border-radius: var(--r-sm); transition: color .25s var(--ease); }
+[data-style="own"] .seg button[aria-pressed="true"], [data-style="own"] .tabs button[aria-selected="true"] { background: none; color: var(--text); box-shadow: none; }
+
+/* ---------- 表格：列懸停時左側出現主色強調線 ---------- */
+[data-style="own"] th { background: transparent; font-weight: 600; border-bottom-color: var(--divider); }
+[data-style="own"] tbody tr { transition: background-color .2s var(--ease); }
+[data-style="own"] table:not(.heat):not(.replay) tbody tr:hover td { /* 色塊表格（熱力圖、燈號格）不套用，否則懸停會蓋掉狀態色 */ background: var(--fill); }
+[data-style="own"] table:not(.heat):not(.replay) tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+/* ---------- 標籤：膠囊形 ---------- */
+[data-style="own"] :is(.tag, .chip-up, .chip-role) { border-radius: var(--r-full); }
+[data-style="own"] :is(.tag.plain, .tag.opt) { border-color: transparent; background: var(--fill); }
+
+/* ---------- 彈出層：選單實心（頂部列是毛玻璃，毛玻璃裡無法再模糊）；說明小視窗毛玻璃、回彈出現 ---------- */
+[data-style="own"] .popover { background: var(--surface); border-radius: var(--r-lg); animation: own-pop .3s var(--spring); transform-origin: top left; }
+/* 說明框不透明：半透明時底下的文字會透出來，和說明文字疊在一起看不清楚 */
+[data-style="own"] .info-pop { background: var(--surface); border-color: var(--border-strong); border-radius: var(--r-lg); animation: own-pop .3s var(--spring); }
+[data-style="own"][data-theme="dark"] .info-pop { background: var(--raised); }
+@keyframes own-pop { from { opacity: 0; transform: scale(.94) translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* ---------- 對話框與抽屜：回彈進場、背景模糊 ---------- */
+[data-style="own"] .scrim { background: rgba(10, 11, 14, .22); backdrop-filter: blur(6px); }
+[data-style="own"] .modal { animation: own-modal .45s var(--spring); }
+[data-style="own"] .drawer { animation: own-drawer .5s var(--spring); }
+@keyframes own-modal { from { transform: translate(-50%, -46%) scale(.96); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+@keyframes own-drawer { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ---------- 其他：細線圖示、呼吸式載入 ---------- */
+[data-style="own"] svg[stroke="currentColor"] { stroke-width: 1.75; }
+[data-style="own"] .skeleton { background: var(--fill); animation: own-breathe 1.6s ease-in-out infinite; }
+@keyframes own-breathe { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+/* ---------- 深色主題的層次：不是把淺色反黑，而是加入「光源」 ----------
+   頁面上方極淡的主色環境光、卡片頂緣高光與由上而下的微漸層、主數字漸層、主按鈕與圖表主線的柔光 */
+:root[data-style="own"][data-theme="dark"] { --chart-glow: 14; }
+[data-style="own"][data-theme="dark"] body {
+  background:
+    radial-gradient(1100px 520px at 12% -12%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 62%),
+    radial-gradient(900px 480px at 100% -8%, color-mix(in srgb, var(--lag) 9%, transparent), transparent 58%),
+    var(--bg);
+  background-attachment: fixed;
+}
+[data-style="own"][data-theme="dark"] :is(.sidebar, .topbar) { background: color-mix(in srgb, var(--bg) 55%, transparent); }
+[data-style="own"][data-theme="dark"] .card {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--text) 4%, var(--surface)), var(--surface) 140px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 0 0 1px rgba(255, 255, 255, .04);
+}
+[data-style="own"][data-theme="dark"] .acard:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09), 0 0 0 1px rgba(255, 255, 255, .08), 0 16px 40px rgba(0, 0, 0, .45); }
+[data-style="own"][data-theme="dark"] .headline .big {
+  background: linear-gradient(180deg, var(--text) 30%, color-mix(in srgb, var(--accent-ink) 70%, var(--text)));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+[data-style="own"][data-theme="dark"] .btn-primary { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent), 0 6px 22px color-mix(in srgb, var(--accent) 32%, transparent); }
+[data-style="own"][data-theme="dark"] .nav::before { background: color-mix(in srgb, var(--text) 9%, var(--surface)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08); }
+[data-style="own"][data-theme="dark"] .nav-item.active svg { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 60%, transparent)); }
+[data-style="own"][data-theme="dark"] .side-status { background: color-mix(in srgb, var(--surface) 80%, transparent); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06); }
+
+/* 手機寬度：卡片標題列的分段控制可橫向捲動（選取塊跟著內容一起捲） */
+@media (max-width: 560px) { [data-style="own"] .card-head .seg.right { overflow-x: auto; } }
+
+@media (prefers-reduced-motion: reduce) { [data-style="own"] *, [data-style="own"] *::before { animation: none !important; transition: none !important; } }

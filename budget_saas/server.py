@@ -345,4 +345,5 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 @app.get("/{path:path}")
 def spa(path: str):
     # 前端用網址路徑切換頁面，所有非 API 路徑都回傳同一個頁面
-    return FileResponse(STATIC / "index.html")
+    # no-cache：每次都向伺服器確認頁面是否更新，否則瀏覽器沿用舊頁面，CSS/JS 的 ?v= 版本號就失效了
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
