@@ -309,6 +309,12 @@ def post_transfer_pdf(req: TransferRequest):
                     headers={"Content-Disposition": f"attachment; filename=\"{req.no}.pdf\"; filename*=UTF-8''{quote(name)}"})
 
 
+@app.get("/healthz")
+def healthz():
+    """給定時喚醒（.github/workflows/keep-warm.yml）用：不讀資料、不呼叫 AI，只讓 Render 免費方案不進入休眠。"""
+    return {"ok": True}
+
+
 @app.get("/api/ai-status")
 def get_ai_status():
     return ai.status()
