@@ -36,9 +36,11 @@
 [data-style="own"] .sidebar { background: var(--bg); border-right-color: transparent; }
 [data-style="own"] .side-status { background: var(--surface); border-color: transparent; box-shadow: var(--shadow); }
 [data-style="own"] .topbar { background: color-mix(in srgb, var(--bg) 75%, transparent); backdrop-filter: saturate(1.8) blur(20px); border-bottom-color: var(--divider); }
-/* 側邊導覽：選取塊會滑到目前頁面（位置由 motion.js 設定 --nav-y / --nav-h） */
+/* 側邊導覽：選取塊會滑到目前頁面（位置由 motion.js 設定 --nav-x / --nav-y / --nav-w / --nav-h；窄螢幕導覽改成橫排時同樣適用）
+   第一次定位不做動畫（data-moved 由 motion.js 在定位後加上），避免每次載入都看到選取塊從 0 長出來 */
 [data-style="own"] .nav { position: relative; }
-[data-style="own"] .nav::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: var(--nav-h, 0); transform: translateY(var(--nav-y, 0)); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow); transition: transform .45s var(--spring), height .3s var(--ease); }
+[data-style="own"] .nav::before { content: ""; position: absolute; left: 0; top: 0; width: var(--nav-w, 0); height: var(--nav-h, 0); transform: translate(var(--nav-x, 0), var(--nav-y, 0)); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow); }
+[data-style="own"] .nav[data-moved]::before { transition: transform .45s var(--spring), width .3s var(--ease), height .3s var(--ease); }
 [data-style="own"] .nav-item { position: relative; z-index: 1; }
 [data-style="own"] .nav-item.active { background: none; color: var(--text); }
 [data-style="own"] .nav-item.active svg { color: var(--accent); }
@@ -78,7 +80,8 @@
 
 /* ---------- 分段控制與分頁：灰色軌道上會滑動的選取塊（位置由 motion.js 設定 --tx / --tw） ---------- */
 [data-style="own"] :is(.seg, .tabs) { position: relative; border: 0; padding: 3px; gap: 2px; border-radius: var(--r-md); background: var(--fill); overflow: visible; }
-[data-style="own"] :is(.seg, .tabs)::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 0; width: var(--tw, 0); transform: translateX(var(--tx, 0)); border-radius: var(--r-sm); background: var(--surface); box-shadow: 0 1px 3px rgba(16, 19, 26, .12), 0 1px 1px rgba(16, 19, 26, .04); transition: transform .45s var(--spring), width .3s var(--ease); }
+[data-style="own"] :is(.seg, .tabs)::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 0; width: var(--tw, 0); transform: translateX(var(--tx, 0)); border-radius: var(--r-sm); background: var(--surface); box-shadow: 0 1px 3px rgba(16, 19, 26, .12), 0 1px 1px rgba(16, 19, 26, .04); }
+[data-style="own"] :is(.seg, .tabs)[data-moved]::before { transition: transform .45s var(--spring), width .3s var(--ease); }
 [data-style="own"][data-theme="dark"] :is(.seg, .tabs)::before { background: color-mix(in srgb, var(--text) 18%, var(--surface)); }
 [data-style="own"] :is(.seg, .tabs) button { position: relative; z-index: 1; border-radius: var(--r-sm); transition: color .25s var(--ease); }
 [data-style="own"] .seg button[aria-pressed="true"], [data-style="own"] .tabs button[aria-selected="true"] { background: none; color: var(--text); box-shadow: none; }

@@ -6,15 +6,31 @@
   var on = function () { return document.documentElement.dataset.style === "own"; };
   var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  // 第一次定位後才加上 data-moved（own.css 只在有 data-moved 時做滑動動畫），所以載入時選取塊直接出現在定位上
+  function moved(el, w) { if (w && !el.hasAttribute("data-moved")) setTimeout(function () { el.setAttribute("data-moved", ""); }, 50); }
   function thumbs() {
     document.querySelectorAll(".seg, .tabs").forEach(function (g) {
       var b = g.querySelector('[aria-pressed="true"], [aria-selected="true"]');
       g.style.setProperty("--tx", b ? b.offsetLeft + "px" : "0px");
       g.style.setProperty("--tw", b ? b.offsetWidth + "px" : "0px");
+      moved(g, b && b.offsetWidth);
     });
     var nav = document.querySelector(".nav"), a = nav && nav.querySelector(".nav-item.active");
-    if (nav) { nav.style.setProperty("--nav-y", a ? a.offsetTop + "px" : "0px"); nav.style.setProperty("--nav-h", a ? a.offsetHeight + "px" : "0px"); }
+    if (nav) {
+      nav.style.setProperty("--nav-x", a ? a.offsetLeft + "px" : "0px"); nav.style.setProperty("--nav-y", a ? a.offsetTop + "px" : "0px");
+      nav.style.setProperty("--nav-w", a ? a.offsetWidth + "px" : "0px"); nav.style.setProperty("--nav-h", a ? a.offsetHeight + "px" : "0px");
+      moved(nav, a && a.offsetWidth);
+    }
   }
+
+  // 保險：進場淡入若沒有播放（瀏覽器暫停動畫，例如分頁在背景、預覽截圖），1 秒後直接顯示完成狀態，內容不會停在透明
+  function settle() {
+    if (!document.getAnimations) return;
+    document.getAnimations().forEach(function (an) {
+      if (an.animationName === "own-rise" && an.playState === "running" && !(an.currentTime > 0)) an.finish();
+    });
+  }
+  var settleTimer = 0;
 
   var SEL = ".kpi-value, .headline .big, .acard-amt, .driver .big";
   var NUM = /[+\-−]?\d[\d,]*(\.\d+)?/;
@@ -54,6 +70,7 @@
     if (!on()) return;
     thumbs();
     document.querySelectorAll(SEL).forEach(count);
+    clearTimeout(settleTimer); settleTimer = setTimeout(settle, 1000);
   }
   // 用計時器而非 requestAnimationFrame 排程：分頁在背景時 rAF 會暫停，選取塊位置就算不出來
   function schedule() { if (!queued) { queued = true; setTimeout(run, 0); } }
