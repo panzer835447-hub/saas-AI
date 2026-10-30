@@ -84,8 +84,35 @@ MONTHS = list(range(1, 13))
 CURRENT_DATE = (2026, 8)  # 假設目前結算至 2026 年 8 月
 
 
+_BUILTIN_IDS = set(DEPTS)
+# 匯入資料可以有內建 8 個以外的部門：代號就是檔案裡的名稱，英文名稱取自選填的 DepartmentEN 欄位
+CUSTOM_DEPT_EN = {}
+EXTRA_COLORS = ["#5B8FA8", "#B0785A", "#6E9A4E", "#A8607F", "#7C8A99", "#C29A3E", "#5E7FC4", "#9A6BC0",
+                "#4E9E9A", "#B86B4B", "#8A8F4E", "#6B7FA0"]
+MAX_DEPTS = 30
+
+
 def dept_key(department):
-    return department.split(" (")[0]
+    return department.split(" (")[0] if department in _BUILTIN_IDS else department
+
+
+def dept_color(department):
+    key = dept_key(department)
+    if key in DEPT_COLORS:
+        return DEPT_COLORS[key]
+    return EXTRA_COLORS[sum(map(ord, key)) % len(EXTRA_COLORS)]  # 依名稱固定配色，重新整理不會換色
+
+
+def dept_order(data):
+    """資料裡有哪些部門：內建部門依固定順序在前，其他部門依檔案中出現的順序接在後面。"""
+    present = list(dict.fromkeys(data.Department))
+    return [d for d in DEPTS if d in present] + [d for d in present if d not in _BUILTIN_IDS]
+
+
+def pick(data, depts):
+    """篩選出資料裡有的部門（保持固定順序）；沒選或都不在資料裡就是全部部門。"""
+    order = dept_order(data)
+    return tuple(d for d in order if d in depts) or tuple(order)
 
 
 @lru_cache(maxsize=4)
@@ -147,6 +174,10 @@ MAX_UPLOADS = 20
 
 
 def register_dataset(data, name, source="upload", scale=None):
+    if "DepartmentEN" in data.columns:  # 新部門的英文名稱（內建部門已有固定英文名稱）
+        for dept, en in data.groupby("Department").DepartmentEN.agg(lambda s: next((x for x in s if x), "")).items():
+            if en and dept not in _BUILTIN_IDS:
+                CUSTOM_DEPT_EN[dept] = en
     ds = uuid.uuid4().hex[:12]
     _UPLOADS[ds] = (data, name, source, scale)
     while len(_UPLOADS) > MAX_UPLOADS:
@@ -402,7 +433,7 @@ def tx(lang, zh, en):
 
 def dept_label(department, lang="zh"):
     key = dept_key(department)
-    return DEPT_EN.get(key, key) if lang == "en" else key
+    return (DEPT_EN.get(key) or CUSTOM_DEPT_EN.get(key) or key) if lang == "en" else key
 
 
 def status_label(status, lang="zh"):
@@ -519,10 +550,9 @@ def _cum(series):
 def meta(ds=""):
     data = dataset(ds)
     info = dataset_info(ds)
-    present = set(data.Department.unique())
     return {
         "years": data_years(data)[::-1],
-        "departments": [{"id": d, "name": dept_key(d), "en": DEPT_EN[dept_key(d)], "color": DEPT_COLORS[dept_key(d)]} for d in DEPTS if d in present],
+        "departments": [{"id": d, "name": dept_key(d), "en": dept_label(d, "en"), "color": dept_color(d)} for d in dept_order(data)],
         "cutoff": info["cutoff"],
         "thresholds": th_dict(), "thresholdLimits": TH_LIMITS,
         "dataset": info,
@@ -531,8 +561,7 @@ def meta(ds=""):
 
 def overview(year, depts, ds="", lang="zh", th=DEFAULT_TH):
     data = dataset(ds)
-    present = set(data.Department.unique())
-    depts = tuple(d for d in DEPTS if d in depts and d in present) or tuple(d for d in DEPTS if d in present)
+    depts = pick(data, depts)
     analysis = analyze_budget(year, depts, ds, th)
     year_frame = data[(data.Year == year) & data.Department.isin(depts)]
     cutoff = int(analysis.Actual_Cutoff_Month.max())
@@ -586,7 +615,7 @@ def overview(year, depts, ds="", lang="zh", th=DEFAULT_TH):
                                      "use": round(float(f.Actual.sum() / f.Budget.sum() * 100), 1)})
         prev_dept = prev[(prev.Department == r.Department) & (prev.Month <= cutoff)]
         rows.append({
-            "id": r.Department, "name": key, "color": DEPT_COLORS[key],
+            "id": r.Department, "name": key, "color": dept_color(r.Department),
             "status": r.Status, "statusKey": STATUS_KEY[r.Status],
             "budget": round(r.Budget_Full), "actualYtd": round(r.Actual_YTD), "budgetYtd": round(r.Budget_YTD),
             "forecast": round(r.Forecast_EOY), "low": round(r.Forecast_Low), "high": round(r.Forecast_High),
@@ -651,8 +680,7 @@ def overview(year, depts, ds="", lang="zh", th=DEFAULT_TH):
 @lru_cache(maxsize=16)
 def replay(depts, ds="", th=DEFAULT_TH):
     data = dataset(ds)
-    present = set(data.Department.unique())
-    depts = tuple(d for d in DEPTS if d in depts and d in present) or tuple(d for d in DEPTS if d in present)
+    depts = pick(data, depts)
     scoped = data[data.Department.isin(depts)]
     years = sorted((int(y) for y, g in scoped.groupby("Year") if g.Actual.notna().all() and g.Month.nunique() == 12), reverse=True)
     by_year, problems, sys_false, rep_false, sys_caught, rep_caught, leads, dept_years = {}, 0, 0, 0, 0, 0, [], 0
@@ -708,8 +736,7 @@ def replay(depts, ds="", th=DEFAULT_TH):
 def backtest(target_year, depts, cutoff_month, ds=""):
     """回到過去年度的某個月份做年底預測，和該年實際全年支出比較；對照組為單純 Run-rate。"""
     data = dataset(ds)
-    present = set(data.Department.unique())
-    depts = tuple(d for d in DEPTS if d in depts and d in present) or tuple(d for d in DEPTS if d in present)
+    depts = pick(data, depts)
     month = min(max(int(cutoff_month), 2), 11)
     rows = []
     for department in depts:
@@ -731,7 +758,7 @@ def backtest(target_year, depts, cutoff_month, ds=""):
         own = [r for r in rows if r["id"] == department]
         if own:
             act = sum(r["actual"] for r in own)
-            by_dept.append({"name": dept_key(department), "color": DEPT_COLORS[dept_key(department)],
+            by_dept.append({"name": dept_key(department), "color": dept_color(department),
                             "model": round(sum(r["_abs"] for r in own) / act * 100, 1),
                             "bench": round(sum(r["_rr"] for r in own) / act * 100, 1)})
     by_dept.sort(key=lambda r: r["model"])
@@ -787,6 +814,7 @@ COLUMN_ALIASES = {
     "預算": "Budget", "實際支出": "Actual", "實際金額": "Actual",
     "一次性支出": "OneOffAmount", "一次性費用": "OneOffAmount",
     "事件說明": "EventNote", "特殊事件": "EventNote",
+    "英文部門名稱": "DepartmentEN", "部門英文名稱": "DepartmentEN", "Department_EN": "DepartmentEN",
 }
 REQUIRED_COLUMNS = ["Year", "Month", "Department", "Budget", "Actual"]
 
@@ -820,14 +848,21 @@ def validate_upload(raw, lang="zh"):
     data["OneOffAmount"] = data.OneOffAmount.fillna(0)
     data["EventNote"] = data.EventNote.fillna("").astype(str)
 
-    dept_alias = {d: d for d in DEPTS}
-    dept_alias.update({dept_key(d): d for d in DEPTS})
-    dept_alias.update({v: next(d for d in DEPTS if d.startswith(k)) for k, v in DEPT_EN.items()})
-    names = data.Department.astype(str).str.strip()
-    data["Department"] = names.map(dept_alias)
-    if data.Department.isna().any():
-        bad = sorted(set(names[data.Department.isna()]))[:5]
-        errors.append(T(f"Department 欄位包含不支援的部門名稱：{'、'.join(bad)}。可用：{'、'.join(dept_key(d) for d in DEPTS)}。", f"Unsupported department names: {', '.join(bad)}. Use: {', '.join(DEPT_EN.values())} (or the Chinese names)."))
+    # 內建部門的中文、英文名稱（不分大小寫）都對應回同一個部門；其他名稱就是新部門，原樣保留
+    builtin = {d: next(x for x in DEPTS if x.startswith(k + " (")) for k, v in DEPT_EN.items() for d in (k, v, f"{k} ({v})")}
+    builtin.update({"HR & Admin": builtin["人資行政部"], "Risk & Compliance": builtin["法遵風控部"]})  # 網頁上顯示的英文簡稱
+    builtin = {k.casefold(): v for k, v in builtin.items()}
+    names = data.Department.fillna("").astype(str).str.strip()
+    data["Department"] = names.map(lambda n: builtin.get(n.casefold(), n))
+    if names.eq("").any():
+        errors.append(T(f"Department 欄位有空白（共 {int(names.eq('').sum())} 列）。", f"Department is blank in {int(names.eq('').sum())} rows."))
+    bad = sorted({n for n in names if "," in n or len(n) > 40})[:5]
+    if bad:
+        errors.append(T(f"部門名稱不可含逗號，且最多 40 個字：{'、'.join(bad)}。", f"Department names cannot contain commas and must be at most 40 characters: {', '.join(bad)}."))
+    if data.Department.nunique() > MAX_DEPTS:
+        errors.append(T(f"最多 {MAX_DEPTS} 個部門，檔案裡有 {data.Department.nunique()} 個。", f"At most {MAX_DEPTS} departments are supported; the file has {data.Department.nunique()}."))
+    if "DepartmentEN" in data.columns:
+        data["DepartmentEN"] = data.DepartmentEN.fillna("").astype(str).str.strip().str.slice(0, 40)
     if not errors:
         if ((data.Month < 1) | (data.Month > 12) | (data.Month % 1 != 0)).any():
             errors.append(T("Month 必須是 1 至 12 的整數。", "Month must be an integer from 1 to 12."))
@@ -853,7 +888,7 @@ def validate_upload(raw, lang="zh"):
     data["Year"] = data.Year.astype(int)
     data["Month"] = data.Month.astype(int)
     data["Budget"] = data.Budget.astype(float)
-    cols = REQUIRED_COLUMNS + ["OneOffAmount", "EventNote"]
+    cols = REQUIRED_COLUMNS + ["OneOffAmount", "EventNote"] + (["DepartmentEN"] if "DepartmentEN" in data.columns else [])
     return data[cols].sort_values(["Year", "Department", "Month"]).reset_index(drop=True), []
 
 
@@ -877,6 +912,8 @@ COST_PROFILES = {
     "人資行政部": [("員工訓練費", .35), ("招募服務費", .25), ("行政維護費", .25), ("差旅費", .15)],
     "法遵風控部": [("法遵顧問費", .35), ("監理申報系統費", .30), ("風險資料服務費", .20), ("教育訓練費", .15)],
 }
+# 匯入資料中內建 8 個以外的部門：用一般營業費用科目組合
+GENERIC_PROFILE = [("專業外包費", .30), ("系統服務費", .25), ("教育訓練費", .20), ("差旅費", .25)]
 ACCOUNT_EN = {
     "雲端服務費": "Cloud services", "軟體訂閱費": "Software subscriptions", "資訊外包費": "IT outsourcing", "設備維護費": "Equipment and maintenance",
     "數位廣告費": "Digital advertising", "活動製作費": "Event production", "行銷外包費": "Marketing services", "差旅費": "Travel",
@@ -935,6 +972,7 @@ COST_CENTERS = {
     "精算部": ["AC510 商品精算", "AC520 評價精算"], "財務部": ["FN610 會計", "FN620 財務規劃"],
     "人資行政部": ["HR710 人才發展", "HR720 總務行政"], "法遵風控部": ["RC810 法令遵循", "RC820 風險管理"],
 }
+GENERIC_CENTERS = ["OP910 部門營運", "OP920 專案支援"]
 # 專案：(部門, 年度) → (代碼名稱, 歸屬到此專案的科目)；其餘費用歸「日常營運」
 DEPT_PROJECTS = {
     ("資訊部", 2026): ("PRJ-IT26-01 雲端遷移計畫", {"雲端服務費", "資訊外包費"}),
@@ -958,7 +996,7 @@ CODED_EN = {
     "雲端遷移計畫": "Cloud migration", "伺服器汰換": "Server replacement", "資料中心 UPS 汰換": "Data-centre UPS replacement",
     "TW-ICS 接軌": "TW-ICS adoption", "IFRS 17 財報上線": "IFRS 17 reporting go-live", "IFRS 17 精算引擎": "IFRS 17 actuarial engine",
     "核保系統升級": "Underwriting system upgrade", "理賠影像系統升級": "Claims imaging upgrade", "數位學習平台": "E-learning platform",
-    "日常營運": "Routine operations",
+    "日常營運": "Routine operations", "部門營運": "Department operations", "專案支援": "Project support",
 }
 # 各部門人員（虛構姓名）：第一位為部門主管；顯示時依檢視身分決定是否遮罩
 _STAFF_NAMES = ["陳怡君", "林家豪", "黃雅婷", "張志明", "李佳穎", "王俊傑", "吳佩珊", "劉冠宇", "蔡宜庭", "楊承恩",
@@ -967,6 +1005,7 @@ _STAFF_NAMES = ["陳怡君", "林家豪", "黃雅婷", "張志明", "李佳穎",
                 "朱佩君", "彭家瑋", "游淑芬", "詹宗翰", "胡雅琪", "施俊宏", "沈佳蓉", "余冠廷", "盧欣妤", "梁哲維"]
 DEPT_STAFF = {dept_key(d): [(f"E{i + 1}{j + 1:03d}", _STAFF_NAMES[i * 5 + j], "部門主管" if j == 0 else ("經理" if j == 1 else "專員"))
                             for j in range(5)] for i, d in enumerate(DEPTS)}
+GENERIC_STAFF = [(f"E9{j + 1:03d}", _STAFF_NAMES[j * 7 % len(_STAFF_NAMES)], "部門主管" if j == 0 else ("經理" if j == 1 else "專員")) for j in range(5)]
 CFO_APPROVAL_LIMIT = 2_000_000  # 單筆 NT$ 200 萬以上需財務長核准
 LINE_MEMOS = {
     "雲端服務費": ["雲端運算資源月租", "儲存與流量超額使用"], "軟體訂閱費": ["軟體授權年費分攤", "使用者授權加購"],
@@ -1003,7 +1042,7 @@ def generate_expense_detail(monthly_data):
             continue
         month_start = len(result)
         key = dept_key(row.Department)
-        profile = COST_PROFILES[key]
+        profile = COST_PROFILES.get(key, GENERIC_PROFILE)
         shares = np.array([weight for _, weight in profile], dtype=float)
         # 合成異常情境：2026 資訊部雲端服務費占比提高，用於示範根因分析
         if key == "資訊部" and row.Year == 2026:
@@ -1015,8 +1054,8 @@ def generate_expense_detail(monthly_data):
         one_off_amount = float(getattr(row, "OneOffAmount", 0) or 0)
         recurring_actual = max(0.0, float(row.Actual) - one_off_amount)
         project_name, project_accounts = DEPT_PROJECTS.get((key, int(row.Year)), (None, set()))
-        staff = DEPT_STAFF[key]
-        centers = COST_CENTERS[key]
+        staff = DEPT_STAFF.get(key, GENERIC_STAFF)
+        centers = COST_CENTERS.get(key, GENERIC_CENTERS)
 
         def add_line(account, amount, expense_id=None, memo=None, vendor=None):
             nonlocal seq
@@ -1101,8 +1140,7 @@ def costs(year, depts, ds="", lang="zh", role="cfo"):
     T = lambda zh, en: tx(lang, zh, en)
     f = lambda v, s=False: fmc(v, s, lang)
     data = dataset(ds)
-    present = set(data.Department.unique())
-    depts = tuple(d for d in DEPTS if d in depts and d in present) or tuple(d for d in DEPTS if d in present)
+    depts = pick(data, depts)
     closed = data[(data.Year == year) & data.Actual.notna()].Month
     cutoff = int(closed.max()) if not closed.empty else 0
     ledger = expense_ledger(ds)

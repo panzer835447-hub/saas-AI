@@ -34,19 +34,20 @@ Role = Literal["cfo", "fpa", "head"]
 Lang = Literal["zh", "en"]
 
 
-def pick_depts(depts):
-    names = {core.dept_key(d): d for d in core.DEPTS}
+def pick_depts(depts, ds=""):
+    # 部門清單依資料集而定：匯入的檔案可以有內建 8 個以外的部門
+    names = {core.dept_key(d): d for d in core.dept_order(core.dataset(ds))}
     return [names[n] for n in depts.split(",") if n in names]
 
 
-def scoped(depts, role, dept):
+def scoped(depts, role, dept, ds=""):
     """部門主管只能看自己的部門，不管前端送什麼。"""
     if role == "head":
-        own = pick_depts(dept)
+        own = pick_depts(dept, ds)
         if not own:
             raise HTTPException(400, "部門主管身分需要指定所屬部門")
         return own
-    return pick_depts(depts)
+    return pick_depts(depts, ds)
 
 
 def check_year(year, ds):
@@ -69,13 +70,13 @@ def get_meta(ds: str = ""):
 def get_overview(year: int, depts: str = Query("", description="以逗號分隔的部門名稱，空白代表全部"),
                  ds: str = "", role: Role = "cfo", dept: str = "", lang: Lang = "zh", th: str = ""):
     check_year(year, ds)
-    return core.overview(year, scoped(depts, role, dept), ds, lang, core.parse_th(th))
+    return core.overview(year, scoped(depts, role, dept, ds), ds, lang, core.parse_th(th))
 
 
 @app.get("/api/report.pdf")
 def get_report(year: int, depts: str = "", ds: str = "", role: Role = "cfo", dept: str = "", lang: Lang = "zh", th: str = ""):
     check_year(year, ds)
-    pdf, name = report.executive_report(year, scoped(depts, role, dept), ds, lang, role, core.parse_th(th))
+    pdf, name = report.executive_report(year, scoped(depts, role, dept, ds), ds, lang, role, core.parse_th(th))
     # 中文檔名用 RFC 5987 編碼，另附 ASCII 檔名給舊瀏覽器
     return Response(pdf, media_type="application/pdf",
                     headers={"Content-Disposition": f"attachment; filename=\"FY{year}_budget_summary.pdf\"; filename*=UTF-8''{quote(name)}"})
@@ -83,19 +84,19 @@ def get_report(year: int, depts: str = "", ds: str = "", role: Role = "cfo", dep
 
 @app.get("/api/replay")
 def get_replay(depts: str = "", ds: str = "", role: Role = "cfo", dept: str = "", th: str = ""):
-    return core.replay(tuple(scoped(depts, role, dept)), ds, core.parse_th(th))
+    return core.replay(tuple(scoped(depts, role, dept, ds)), ds, core.parse_th(th))
 
 
 @app.get("/api/backtest")
 def get_backtest(year: int, depts: str = "", month: int = 8, ds: str = "", role: Role = "cfo", dept: str = ""):
     check_year(year, ds)
-    return core.backtest(year, tuple(scoped(depts, role, dept)), month, ds)
+    return core.backtest(year, tuple(scoped(depts, role, dept, ds)), month, ds)
 
 
 @app.get("/api/costs")
 def get_costs(year: int, depts: str = "", ds: str = "", role: Role = "cfo", dept: str = "", lang: Lang = "zh"):
     check_year(year, ds)
-    return core.costs(year, tuple(scoped(depts, role, dept)), ds, lang, role)
+    return core.costs(year, tuple(scoped(depts, role, dept, ds)), ds, lang, role)
 
 
 @app.get("/api/ledger.xlsx")
@@ -103,7 +104,7 @@ def get_ledger_xlsx(year: int, depts: str = "", ds: str = "", role: Role = "cfo"
                     fdept: str = "", gl: str = "", cfo: bool = False, q: str = Query("", max_length=100)):
     """費用明細帳匯出：範圍與遮罩和畫面相同（部門主管只匯得出自己部門）；fdept / gl / cfo / q 為明細帳的篩選條件。"""
     check_year(year, ds)
-    data, name = report.ledger_xlsx(year, scoped(depts, role, dept), ds, lang, role, fdept, gl, cfo, q)
+    data, name = report.ledger_xlsx(year, scoped(depts, role, dept, ds), ds, lang, role, fdept, gl, cfo, q)
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f"attachment; filename=\"FY{year}_expense_ledger.xlsx\"; filename*=UTF-8''{quote(name)}"})
 
@@ -229,9 +230,8 @@ def ai_allowed(request: Request) -> bool:
 
 
 def chat_depts(req):
-    present = set(core.dataset(req.ds).Department.unique())
-    picked = scoped(req.depts, req.viewRole, req.viewDept)
-    depts = tuple(d for d in core.DEPTS if d in picked and d in present) or tuple(d for d in core.DEPTS if d in present)
+    picked = scoped(req.depts, req.viewRole, req.viewDept, req.ds)
+    depts = core.pick(core.dataset(req.ds), picked)
     return depts, head_note(req.viewRole, picked, req.lang)
 
 
@@ -302,7 +302,7 @@ class TransferRequest(BaseModel):
 
 @app.post("/api/transfer.pdf")
 def post_transfer_pdf(req: TransferRequest):
-    keys = {core.dept_key(d) for d in core.DEPTS}
+    keys = {core.dept_key(d) for d in core.dept_order(core.dataset(req.ds))}
     if req.fromDept not in keys or req.toDept not in keys:
         raise HTTPException(422, core.tx(req.lang, "部門名稱不正確", "Unknown department"))
     pdf, name = report.transfer_request(req, req.lang, core.dataset_info(req.ds)["source"] == "synthetic")

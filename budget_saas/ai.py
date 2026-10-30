@@ -412,7 +412,7 @@ def parse_chart_tag(reply, depts):
         return clean, None, False
     names = {}
     for d in depts:
-        for alias in (d, core.dept_key(d), core.DEPT_EN[core.dept_key(d)]):
+        for alias in (d, core.dept_key(d), core.dept_label(d, "en")):
             names[alias.casefold()] = core.dept_key(d)
     dept = names.get(str(spec.get("department") or "").strip().casefold())
     kind = spec.get("type")
@@ -430,7 +430,7 @@ def parse_chart_tag(reply, depts):
 def keyword_chart(question, depts):
     """模型沒挑圖（或用內建規則）時，依關鍵字挑圖。"""
     q = question.casefold()
-    dept = next((core.dept_key(d) for d in depts if core.dept_key(d) in q or core.DEPT_EN[core.dept_key(d)].casefold() in q), None)
+    dept = next((core.dept_key(d) for d in depts if core.dept_key(d) in question or _names_dept(question, core.dept_label(d, "en"))), None)
     if any(t in q for t in ("去年", "往年", "歷年", "前年", "趨勢", "history", "trend", "last year")):
         return {"type": "history", "department": dept}
     if dept:
@@ -606,7 +606,7 @@ def rule_reply(question, year, depts, ds="", lang="zh", th=core.DEFAULT_TH):
     analysis = core.analyze_budget(year, depts, ds, th)
     q = question.casefold()
     dept = next((d for d in analysis.Department
-                 if core.dept_key(d) in q or _names_dept(question, core.DEPT_EN[core.dept_key(d)])), None)
+                 if core.dept_key(d) in question or _names_dept(question, core.dept_label(d, "en"))), None)
     if dept:
         r = analysis[analysis.Department == dept].iloc[0]
         return T(f"**{name(dept)}｜{year} 年**\n\n"
