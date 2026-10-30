@@ -10,7 +10,9 @@ const DEPT_EN = {
   資訊部: "IT", 行銷部: "Marketing", 核保部: "Underwriting", 理賠部: "Claims", 精算部: "Actuarial",
   財務部: "Finance", 人資行政部: "HR & Admin", 法遵風控部: "Risk & Compliance",
 };
-const dn = (name) => (LANG === "en" ? DEPT_EN[name] || name : name); // 部門顯示名稱；資料與網址仍用中文名稱當代號
+// 匯入資料的自訂部門：英文名稱來自伺服器 meta（CSV 的 DepartmentEN 欄），每次繪製前由 App 更新
+let META_EN = {};
+const dn = (name) => (LANG === "en" ? DEPT_EN[name] || META_EN[name] || name : name); // 部門顯示名稱；資料與網址仍用中文名稱當代號
 const STATUS_TEXT = { high: ["高風險超支", "High overspend risk"], watch: ["需注意", "Monitor closely"], lag: ["執行落後", "Behind plan"], ok: ["預算正常", "On track"] };
 const sl = (key) => t(...STATUS_TEXT[key]);
 const MONTH_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -333,9 +335,20 @@ function Info({ children, label }) {
 function Select({ value, options, onChange, label, prefix, icon, cls = "ctl", numeric }) {
   const [open, setOpen, wrap] = usePopover();
   const [hi, setHi] = useState(0);
+  const [fit, setFit] = useState(null);
   const list = useRef(null);
   const idx = Math.max(0, options.findIndex((o) => o.value === value));
   useEffect(() => { if (open) setHi(idx); }, [open]);
+  useEffect(() => {
+    // 清單不能超出畫面：下方放不下就縮短（可捲動），上方空間比較大時改往上展開
+    // 例如身分選單裡的「所屬部門」在畫面下半部，原本最後一個部門會掉到畫面外選不到
+    if (!open || !list.current) { setFit(null); return; }
+    const r = wrap.current.getBoundingClientRect();
+    const need = Math.min(320, list.current.scrollHeight);
+    const below = window.innerHeight - r.bottom - 6 - 16, above = r.top - 6 - 16;
+    const up = below < need && above > below;
+    setFit({ up, max: Math.max(120, Math.min(320, up ? above : below)) });
+  }, [open, options.length]);
   useEffect(() => { const el = open && list.current && list.current.children[hi]; if (el) el.scrollIntoView({ block: "nearest" }); }, [open, hi]);
   const pick = (o) => { setOpen(false); if (o.value !== value) onChange(o.value); };
   const key = (e) => {
@@ -349,7 +362,7 @@ function Select({ value, options, onChange, label, prefix, icon, cls = "ctl", nu
     <button type="button" class=${cls + " select-btn"} aria-haspopup="listbox" aria-expanded=${open} aria-label=${label} onClick=${() => setOpen(!open)} onKeyDown=${key}>
       ${icon ? html`<${Icon} name=${icon} size=${16} />` : null}${prefix ? html`<span class="k">${prefix}</span>` : null}<b class=${numeric ? "num" : ""}>${options[idx] ? options[idx].label : ""}</b><${Icon} name="chevron" size=${14} />
     </button>
-    ${open ? html`<ul class="popover menu" role="listbox" aria-label=${label} ref=${list}>
+    ${open ? html`<ul class=${"popover menu" + (fit && fit.up ? " up" : "")} role="listbox" aria-label=${label} ref=${list} style=${fit ? { "--menu-max": fit.max + "px" } : null}>
       ${options.map((o, i) => html`<li role="option" aria-selected=${o.value === value} class=${"menu-opt" + (i === hi ? " hi" : "") + (numeric ? " num" : "")}
         onMouseEnter=${() => setHi(i)} onMouseDown=${(e) => e.preventDefault()} onClick=${() => pick(o)}>
         <span>${o.label}</span>${o.value === value ? html`<${Icon} name="check" size=${14} />` : null}</li>`)}
@@ -609,7 +622,10 @@ function trajectoryOption(data, compare, theme) {
 // 兩端（預算、預估）長條底部畫「≈」截斷符號，提醒那兩根的高度不是從 0 量起。手機寬度改成橫向，部門名稱才放得下
 function bridgeOption(data) {
   const closed = data.cutoff >= 12, tt = data.totals;
-  const horizontal = window.innerWidth < 560;
+  // 每根長條分到的寬度太窄（手機，或匯入資料的部門比較多）就改成橫向，部門名稱才不會互相重疊
+  // 圖表可用寬度約為：內容區（上限 1440）扣掉側欄、頁面與卡片內距
+  const plotW = Math.min(window.innerWidth, 1440) - (window.innerWidth > 900 ? 260 : 0) - 104;
+  const horizontal = window.innerWidth < 560 || plotW / (data.departments.length + 2) < 56;
   const deps = [...data.departments].sort((a, b) => b.variance - a.variance);
   const endName = closed ? t("全年實際", "Full-year actual") : t("年底預估", "Year-end forecast");
   const names = [t("年度預算", "Budget"), ...deps.map((d) => dn(d.name)), endName];
@@ -664,7 +680,8 @@ function bridgeOption(data) {
     { name: "up", type: "bar", stack: "w", data: up, itemStyle: { color: css("--high"), borderRadius: 2 }, label: lbl(1) },
     { name: "down", type: "bar", stack: "w", data: down, itemStyle: { color: css("--lag"), borderRadius: 2 }, label: lbl(-1) },
   ];
-  return { option: o, deps, lo };
+  // 橫向且部門多時每列留 28px，不然長條擠成細線
+  return { option: o, deps, lo, height: horizontal && names.length > 10 ? names.length * 28 + 48 : null };
 }
 
 // 橋接圖副標：直接點出最大的不利與有利差額來源（用中性的「來源／抵銷」，不寫成指責）
@@ -704,7 +721,7 @@ function Trajectory({ data, compare, theme, openDept }) {
     <div class="legend">
       <span><i class="sw-block bg-high"></i>${t("不利差異（超支）", "Adverse (over budget)")}</span><span><i class="sw-block bg-lag"></i>${t("有利差異（低於預算）", "Favourable (under budget)")}</span>
     </div>
-    <${EChart} option=${bridge.option} label=${t(`預算 ${fmc(tt.budget)} 到年底 ${fmc(tt.forecast)} 的部門橋接圖`, `Bridge from budget ${fmc(tt.budget)} to year-end ${fmc(tt.forecast)} by department`)}
+    <${EChart} option=${bridge.option} height=${bridge.height} label=${t(`預算 ${fmc(tt.budget)} 到年底 ${fmc(tt.forecast)} 的部門橋接圖`, `Bridge from budget ${fmc(tt.budget)} to year-end ${fmc(tt.forecast)} by department`)}
       onClick=${(p) => { if (p.seriesName === "up" || p.seriesName === "down") openDept(bridge.deps[p.dataIndex - 1].id); }} />
   </div>`;
   return html`<div class="card card-pad" style="min-width:0">
@@ -1288,34 +1305,52 @@ const postJson = async (url, payload) => {
   return r.json();
 };
 
+// 進行中的 AI 請求放在元件外面：切換到別的頁面時元件被卸載，但請求照常跑完、結果寫進 sessionStorage，
+// 回到 AI 助理或預警頁時接著顯示逐字內容或完成的回答（之前元件一卸載，回答就不見了）
+const aiJobs = {}; // key → { draft }
+const aiFailed = new Set(); // 最後一次失敗的簡報 key
+const aiSubs = new Set();
+let aiGen = 0; // 換身分、換資料或門檻時遞增，舊請求完成後不再寫回
+const aiNotify = () => aiSubs.forEach((f) => f());
+function useAiJobs() {
+  const [, bump] = useState(0);
+  useEffect(() => { const f = () => bump((n) => n + 1); aiSubs.add(f); return () => aiSubs.delete(f); }, []);
+}
+function runAi(key, url, fallbackUrl, payload, onDone) {
+  const gen = aiGen;
+  const job = (aiJobs[key] = { draft: "" });
+  aiFailed.delete(key);
+  aiNotify();
+  (async () => {
+    let res = null, shown = false;
+    try {
+      res = await streamPost(url, payload, (text) => { shown = true; job.draft = text; aiNotify(); });
+    } catch (e) {}
+    // 還沒顯示任何字就斷線時改用一次回傳；已經寫到一半就不重送，避免重複呼叫 AI
+    if (!res && !shown) { try { res = await postJson(fallbackUrl, payload); } catch (e) {} }
+    if (gen === aiGen) onDone(res, shown);
+    if (aiJobs[key] === job) delete aiJobs[key];
+    aiNotify();
+  })();
+}
+
 function BriefPanel({ data, state, go }) {
   const key = `brief:${chatKey(state)}:${data.year}:${(state.th || DEFAULT_TH).join()}:${state.depts.join(",")}:${state.lang || "zh"}`;
-  const [brief, setBrief] = useState(() => { try { return JSON.parse(sessionStorage.getItem(key)); } catch (e) { return null; } });
-  const [phase, setPhase] = useState("idle"); // idle | writing | error
-  const [draft, setDraft] = useState("");
+  useAiJobs();
+  const brief = loadJson(key);
+  const job = aiJobs[key];
+  const phase = job ? "writing" : aiFailed.has(key) ? "error" : "idle";
+  const draft = job ? job.draft : "";
   const [pdf, setPdf] = useState("idle"); // idle | busy | error
   const body = () => ({ year: data.year, depts: state.depts.join(","), ds: state.ds || "", viewRole: state.role, viewDept: state.roleDept || "",
     lang: state.lang || "zh", th: (state.th || DEFAULT_TH).join(",") });
-  const write = async (fresh = false) => {
-    setPhase("writing");
-    setDraft("");
-    const payload = { ...body(), fresh };
-    let res = null, shown = false;
-    try {
-      res = await streamPost("/api/brief/stream", payload, (text) => { shown = true; setDraft(text); });
-    } catch (e) {}
-    try {
-      // 還沒顯示任何字就斷線時改用一次回傳；已經寫到一半就不重送，避免重複呼叫 AI
-      if (!res && !shown) res = await postJson("/api/brief", payload);
-      if (!res) throw new Error();
-      const b = { ...res, at: new Date().toLocaleString(state.lang === "en" ? "en-US" : "zh-TW", { hour12: false }) };
-      setBrief(b);
-      try { sessionStorage.setItem(key, JSON.stringify(b)); } catch (e) {}
-      setPhase("idle");
-    } catch (e) {
-      setPhase("error");
-    }
-    setDraft("");
+  const write = (fresh = false) => {
+    if (aiJobs[key]) return;
+    const at = state.lang === "en" ? "en-US" : "zh-TW";
+    runAi(key, "/api/brief/stream", "/api/brief", { ...body(), fresh }, (res) => {
+      if (!res) { aiFailed.add(key); return; }
+      try { sessionStorage.setItem(key, JSON.stringify({ ...res, at: new Date().toLocaleString(at, { hour12: false }) })); } catch (e) {}
+    });
   };
   const download = async () => {
     setPdf("busy");
@@ -2221,26 +2256,45 @@ function Message({ m, data, theme, retry }) {
 }
 
 // 對話依檢視身分與資料集分開存放：部門主管不會看到財務長身分問到的全公司回答
-const chatKey = (s) => `chat:${s.role}:${s.role === "head" ? s.roleDept : ""}:${s.ds || ""}`;
-function loadChat(key) {
-  try { return JSON.parse(sessionStorage.getItem(key) || "[]"); } catch (e) { return []; }
+// 中英文也分開存：切換成英文後，不會還顯示先前用中文問答的對話
+const chatKey = (s) => `chat:${s.role}:${s.role === "head" ? s.roleDept : ""}:${s.ds || ""}:${s.lang || "zh"}`;
+// 讀 sessionStorage 的 JSON；內容沒變就回傳同一個物件，逐字更新時已完成的訊息與圖表不必重繪
+const jsonCache = {};
+function loadJson(key, empty = null) {
+  const raw = store.get(key);
+  if (raw == null) return empty;
+  if (jsonCache[key] && jsonCache[key].raw === raw) return jsonCache[key].value;
+  let value = empty;
+  try { value = JSON.parse(raw); } catch (e) {}
+  jsonCache[key] = { raw, value };
+  return value;
 }
+const NO_MESSAGES = [];
+const loadChat = (key) => loadJson(key, NO_MESSAGES);
+const saveChat = (key, messages) => { store.set(key, JSON.stringify(messages)); aiNotify(); };
 function clearChats() {
+  // 進行中的回答屬於舊身分或舊資料，完成後不再寫回
+  aiGen++;
+  Object.keys(aiJobs).forEach((k) => delete aiJobs[k]);
+  aiFailed.clear();
   try { Object.keys(sessionStorage).filter((k) => k === "chat" || k.startsWith("chat:")).forEach((k) => sessionStorage.removeItem(k)); } catch (e) {}
+  aiNotify();
 }
 
 function Assistant({ data, state, theme }) {
   const key = chatKey(state);
-  const [messages, setMessages] = useState(() => loadChat(key));
+  useAiJobs();
+  const messages = loadChat(key);
+  const job = aiJobs[key];
+  const busy = !!job;
+  const draft = job ? job.draft : "";
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [draft, setDraft] = useState("");
   const [status, setStatus] = useState(null);
   const log = useRef(null);
   const box = useRef(null);
   const card = useRef(null);
 
-  useEffect(() => { try { sessionStorage.setItem(key, JSON.stringify(messages)); } catch (e) {} }, [messages]);
+  useEffect(() => { if (!busy && box.current) box.current.focus(); }, [busy]);
   useEffect(() => {
     // 圖表在下一個畫面才撐開高度，所以捲到底要等一下
     const toEnd = () => log.current && (log.current.scrollTop = log.current.scrollHeight);
@@ -2273,32 +2327,19 @@ function Assistant({ data, state, theme }) {
     if (pending) send(pending);
   }, []);
 
-  async function send(text, base) {
+  function send(text, base) {
     const q = text.trim();
-    if (!q || busy) return;
+    if (!q || aiJobs[key]) return;
     const history = (base || loadChat(key)).filter((m) => !m.error);
     const next = [...history, { role: "user", content: q }];
-    setMessages(next);
+    saveChat(key, next);
     setInput("");
-    setBusy(true);
-    setDraft("");
+    const en = state.lang === "en";
     const payload = { year: state.year, depts: state.depts.join(","), ds: state.ds || "", viewRole: state.role, viewDept: state.roleDept || "", lang: state.lang || "zh", th: (state.th || DEFAULT_TH).join(","), messages: next.map((m) => ({ role: m.role, content: m.content.replace(MARK_RE, "") })) };
-    let a = null, shown = false;
-    try {
-      a = await streamPost("/api/chat/stream", payload, (text) => { shown = true; setDraft(text); });
-    } catch (e) {}
-    try {
-      // 還沒顯示任何字就斷線時改用一次回傳；已經寫到一半就不重送，避免重複呼叫 AI
-      if (!a && !shown) a = await postJson("/api/chat", payload);
-      if (!a) throw new Error();
-      setMessages([...next, { role: "assistant", content: a.text, mode: a.mode, source: a.source, check: a.check, chart: a.chart }]);
-    } catch (e) {
-      setMessages([...next, { role: "assistant", content: "", error: shown ? t("回覆中斷了，請再試一次。", "The reply was cut off; please try again.") : t("連線失敗，這個問題沒有送出。", "Connection failed; the question was not sent.") }]);
-    } finally {
-      setDraft("");
-      setBusy(false);
-      box.current && box.current.focus();
-    }
+    runAi(key, "/api/chat/stream", "/api/chat", payload, (a, shown) => {
+      saveChat(key, [...next, a ? { role: "assistant", content: a.text, mode: a.mode, source: a.source, check: a.check, chart: a.chart }
+        : { role: "assistant", content: "", error: shown ? (en ? "The reply was cut off; please try again." : "回覆中斷了，請再試一次。") : (en ? "Connection failed; the question was not sent." : "連線失敗，這個問題沒有送出。") }]);
+    });
   }
   const retry = () => {
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
@@ -2320,7 +2361,7 @@ function Assistant({ data, state, theme }) {
           <div class="card-sub">${scope} · ${data.cutoff < 12 ? t(`資料截至 ${data.year}/${String(data.cutoff).padStart(2, "0")}`, `data through ${mon(data.cutoff)} ${data.year}`) : t(`FY${data.year} 全年`, `FY${data.year} full year`)}</div>
         </div>
         ${status ? html`<span class=${"conn " + (status.online ? "on" : "off")}><i></i>${status.online ? t("AI 已連線", "AI online") : t("內建規則模式", "Built-in rules mode")}</span>` : null}
-        ${messages.length ? html`<button type="button" class="ghost-btn push-right" onClick=${() => setMessages([])}><${Icon} name="trash" size=${14} />${t("清除對話", "Clear chat")}</button>` : null}
+        ${messages.length ? html`<button type="button" class="ghost-btn push-right" disabled=${busy} onClick=${() => saveChat(key, [])}><${Icon} name="trash" size=${14} />${t("清除對話", "Clear chat")}</button>` : null}
       </div>
       <div class="chat-log" ref=${log} aria-live="polite">
         ${messages.length ? messages.map((m) => html`<${Message} m=${m} data=${data} theme=${theme} retry=${retry} />`) : html`<div class="chat-empty">
@@ -2364,7 +2405,8 @@ function Assistant({ data, state, theme }) {
 const CSV_COLUMNS = () => [
   ["Year", "年度", true, t("例如 2026", "e.g. 2026")],
   ["Month", "月份", true, t("1–12，每個年度與部門都要有 12 個月", "1–12; every year and department needs all 12 months")],
-  ["Department", "部門", true, t("資訊部、行銷部…或英文名稱", "IT, Marketing… or the Chinese names")],
+  ["Department", "部門", true, t("內建部門（資訊部、行銷部…或英文名稱），也可以是貴公司自己的部門名稱", "Built-in departments (IT, Marketing… or the Chinese names) or your own department names")],
+  ["DepartmentEN", "英文部門名稱", false, t("自訂部門在英文介面顯示的名稱；沒填就顯示原名", "Name shown in the English UI for your own departments; the original name is used if blank")],
   ["Budget", "預算", true, t("當月預算（元），不可為負", "Monthly budget (NT$), not negative")],
   ["Actual", "實際支出", true, t("當月實際（元）；尚未結算的月份留空", "Monthly actual (NT$); leave blank for months not yet closed")],
   ["OneOffAmount", "一次性支出", false, t("一次性金額只計一次，不外推到未來", "One-off amounts count once and are not extrapolated")],
@@ -2569,6 +2611,7 @@ function App() {
   const [settings, setSettings] = useState(false);
   const [theme, setThemeState] = useState(document.documentElement.dataset.theme);
   LANG = state.lang; // 子元件在這次繪製時讀取
+  META_EN = meta ? Object.fromEntries(meta.departments.map((d) => [d.name, d.en])) : {};
   TH = { high: state.th[0], watch: state.th[1], lag: state.th[2] };
 
   useEffect(() => {

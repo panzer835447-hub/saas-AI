@@ -121,7 +121,8 @@ h1, h2, h3 { margin: 0; }
 .select-btn b { font-weight: 600; }
 .select-btn svg:last-child { color: var(--muted); transition: transform .15s ease; }
 .select-btn[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
-.popover.menu { width: max-content; min-width: 100%; max-height: 320px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; animation: menu-in .14s ease-out; transform-origin: top; }
+.popover.menu { width: max-content; min-width: 100%; max-height: var(--menu-max, 320px); overflow-y: auto; margin: 0; padding: 4px; list-style: none; animation: menu-in .14s ease-out; transform-origin: top; }
+.popover.menu.up { top: auto; bottom: calc(100% + 6px); transform-origin: bottom; }
 .menu-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: var(--r-sm); font-size: var(--fs-body-sm); color: var(--text); cursor: pointer; white-space: nowrap; }
 .menu-opt.hi { background: var(--hover); }
 .menu-opt[aria-selected="true"] { font-weight: 600; color: var(--accent-ink); }
